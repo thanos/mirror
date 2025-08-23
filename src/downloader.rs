@@ -67,6 +67,7 @@ impl PartialOrd for DownloadTask {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WebsiteMirror {
     base_url: String,
     output_dir: PathBuf,
@@ -745,5 +746,337 @@ impl WebsiteMirror {
         println!("✅ Downloaded {} to: {}", resource_type, saved_path.display());
         
         Ok(())
+    }
+} 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use std::sync::Arc;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_website_mirror_new() {
+        let temp_dir = tempdir().unwrap();
+        let mirror = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path().to_str().unwrap(),
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
+        
+        assert_eq!(mirror.base_url.as_str(), "https://example.com");
+        assert_eq!(mirror.max_depth, 3);
+        assert_eq!(mirror.max_concurrent, 10);
+        assert_eq!(mirror.ignore_robots, false);
+        assert_eq!(mirror.download_external, false);
+        assert_eq!(mirror.convert_to_webp, false);
+    }
+
+    #[test]
+    fn test_website_mirror_new_with_options() {
+        let temp_dir = tempdir().unwrap();
+        let mirror = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path().to_str().unwrap(),
+            5,
+            20,
+            true,
+            true,
+            Some(vec!["images".to_string()]),
+            true
+        ).unwrap();
+        
+        assert_eq!(mirror.max_depth, 5);
+        assert_eq!(mirror.max_concurrent, 20);
+        assert_eq!(mirror.ignore_robots, true);
+        assert_eq!(mirror.download_external, true);
+        assert_eq!(mirror.convert_to_webp, true);
+        assert_eq!(mirror.only_resources, Some(vec!["images".to_string()]));
+    }
+
+    #[test]
+    fn test_should_process_resource_type() {
+        let mirror = WebsiteMirror::new(
+            "https://example.com",
+            "/tmp",
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
+        
+        // Test with no restrictions
+        assert!(mirror.should_process_resource_type(&ResourceType::CSS));
+        assert!(mirror.should_process_resource_type(&ResourceType::JavaScript));
+        assert!(mirror.should_process_resource_type(&ResourceType::Image));
+        assert!(mirror.should_process_resource_type(&ResourceType::Link));
+        
+        // Test with specific restrictions
+        let mirror = WebsiteMirror::new(
+            "https://example.com",
+            "/tmp",
+            3,
+            10,
+            false,
+            false,
+            Some(vec!["images".to_string(), "css".to_string()]),
+            false
+        ).unwrap();
+        
+        assert!(mirror.should_process_resource_type(&ResourceType::CSS));
+        assert!(!mirror.should_process_resource_type(&ResourceType::JavaScript));
+        assert!(mirror.should_process_resource_type(&ResourceType::Image));
+        assert!(!mirror.should_process_resource_type(&ResourceType::Link));
+    }
+
+    #[test]
+    fn test_convert_to_webp_success() {
+        // Create a simple test image (1x1 pixel PNG)
+        let png_data = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+            0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00,
+            0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0x99, 0x01, 0x01, 0x00, 0x00, 0x00,
+            0xFF, 0xFF, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC, 0x33,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+        ];
+        
+        let result = WebsiteMirror::convert_to_webp(&png_data, "test.png");
+        assert!(result.is_ok());
+        
+        let webp_data = result.unwrap();
+        assert!(webp_data.len() > 0);
+        assert!(webp_data.len() != png_data.len()); // Should be different size
+    }
+
+    #[test]
+    fn test_convert_to_webp_invalid_image() {
+        let invalid_data = b"not an image";
+        let result = WebsiteMirror::convert_to_webp(invalid_data, "test.txt");
+        assert!(result.is_ok()); // Should return original data on failure
+        
+        let returned_data = result.unwrap();
+        assert_eq!(returned_data, invalid_data);
+    }
+
+    #[test]
+    fn test_get_local_path_for_resource_static() {
+        let html_parser = HtmlParser::new("https://example.com").unwrap();
+        
+        // Test normal path
+        let result = WebsiteMirror::get_local_path_for_resource_static(
+            &html_parser, 
+            "https://example.com/image.jpg", 
+            false
+        ).unwrap();
+        assert_eq!(result, "image.jpg");
+        
+        // Test WebP conversion
+        let result = WebsiteMirror::get_local_path_for_resource_static(
+            &html_parser, 
+            "https://example.com/image.jpg", 
+            true
+        ).unwrap();
+        assert_eq!(result, "image.webp");
+        
+        // Test PNG conversion
+        let result = WebsiteMirror::get_local_path_for_resource_static(
+            &html_parser, 
+            "https://example.com/image.png", 
+            true
+        ).unwrap();
+        assert_eq!(result, "image.webp");
+        
+        // Test non-image file
+        let result = WebsiteMirror::get_local_path_for_resource_static(
+            &html_parser, 
+            "https://example.com/style.css", 
+            true
+        ).unwrap();
+        assert_eq!(result, "style.css");
+    }
+
+    #[test]
+    fn test_download_task_ordering() {
+        let task1 = DownloadTask {
+            url: "https://example.com/style.css".to_string(),
+            depth: 1,
+            priority: DownloadPriority::Critical,
+        };
+        
+        let task2 = DownloadTask {
+            url: "https://example.com/page.html".to_string(),
+            depth: 1,
+            priority: DownloadPriority::High,
+        };
+        
+        let task3 = DownloadTask {
+            url: "https://example.com/image.jpg".to_string(),
+            depth: 1,
+            priority: DownloadPriority::Normal,
+        };
+        
+        let task4 = DownloadTask {
+            url: "https://example.com/script.js".to_string(),
+            depth: 2,
+            priority: DownloadPriority::Critical,
+        };
+        
+        // Critical should come before High
+        assert!(task1 > task2);
+        
+        // High should come before Normal
+        assert!(task2 > task3);
+        
+        // Same priority, lower depth should come first
+        assert!(task1 > task4);
+        
+        // Test PartialOrd
+        assert!(task1 >= task2);
+        assert!(task2 <= task1);
+    }
+
+    #[test]
+    fn test_download_task_equality() {
+        let task1 = DownloadTask {
+            url: "https://example.com/style.css".to_string(),
+            depth: 1,
+            priority: DownloadPriority::Critical,
+        };
+        
+        let task2 = DownloadTask {
+            url: "https://example.com/style.css".to_string(),
+            depth: 1,
+            priority: DownloadPriority::Critical,
+        };
+        
+        let task3 = DownloadTask {
+            url: "https://example.com/script.js".to_string(),
+            depth: 1,
+            priority: DownloadPriority::Critical,
+        };
+        
+        assert_eq!(task1, task2);
+        assert_ne!(task1, task3);
+    }
+
+    #[test]
+    fn test_download_priority_ordering() {
+        assert!(DownloadPriority::Critical > DownloadPriority::High);
+        assert!(DownloadPriority::High > DownloadPriority::Normal);
+        assert!(DownloadPriority::Normal > DownloadPriority::Low);
+    }
+
+    #[test]
+    fn test_download_priority_debug() {
+        assert_eq!(format!("{:?}", DownloadPriority::Critical), "Critical");
+        assert_eq!(format!("{:?}", DownloadPriority::High), "High");
+        assert_eq!(format!("{:?}", DownloadPriority::Normal), "Normal");
+        assert_eq!(format!("{:?}", DownloadPriority::Low), "Low");
+    }
+
+    #[test]
+    fn test_download_priority_clone() {
+        let priority = DownloadPriority::Critical;
+        let cloned = priority.clone();
+        assert_eq!(cloned, priority);
+    }
+
+    #[test]
+    fn test_website_mirror_debug() {
+        let temp_dir = tempdir().unwrap();
+        let mirror = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path().to_str().unwrap(),
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
+        
+        let debug_str = format!("{:?}", mirror);
+        assert!(debug_str.contains("WebsiteMirror"));
+        assert!(debug_str.contains("example.com"));
+    }
+
+    #[test]
+    fn test_website_mirror_clone() {
+        let temp_dir = tempdir().unwrap();
+        let mirror = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path().to_str().unwrap(),
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
+        
+        let cloned = mirror.clone();
+        assert_eq!(mirror.base_url, cloned.base_url);
+        assert_eq!(mirror.max_depth, cloned.max_depth);
+        assert_eq!(mirror.max_concurrent, cloned.max_concurrent);
+        assert_eq!(mirror.ignore_robots, cloned.ignore_robots);
+        assert_eq!(mirror.download_external, cloned.download_external);
+        assert_eq!(mirror.convert_to_webp, cloned.convert_to_webp);
+    }
+
+    #[test]
+    fn test_website_mirror_partial_eq() {
+        let temp_dir = tempdir().unwrap();
+        let mirror1 = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path().to_str().unwrap(),
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
+        
+        let mirror2 = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path().to_str().unwrap(),
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
+        
+        assert_eq!(mirror1, mirror2);
+    }
+
+    #[test]
+    fn test_website_mirror_hash() {
+        let temp_dir = tempdir().unwrap();
+        let mirror = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path().to_str().unwrap(),
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
+        
+        let mut map = HashMap::new();
+        map.insert(mirror.clone(), "value");
+        
+        assert_eq!(map.get(&mirror), Some(&"value"));
     }
 } 

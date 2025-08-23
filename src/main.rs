@@ -38,3 +38,198 @@ async fn main() -> Result<()> {
     println!("✅ Website mirroring completed successfully!");
     Ok(())
 } 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_parse_args() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_ok());
+        
+        let cmd = result.unwrap();
+        assert_eq!(cmd.url, "https://example.com");
+        assert_eq!(cmd.output_dir, "./output");
+    }
+
+    #[test]
+    fn test_parse_args_with_full_mirror() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "--full-mirror".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_ok());
+        
+        let cmd = result.unwrap();
+        assert_eq!(cmd.url, "https://example.com");
+        assert_eq!(cmd.output_dir, "./output");
+        assert!(cmd.full_mirror);
+    }
+
+    #[test]
+    fn test_parse_args_with_convert_to_webp() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "--convert-to-webp".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_ok());
+        
+        let cmd = result.unwrap();
+        assert_eq!(cmd.url, "https://example.com");
+        assert_eq!(cmd.output_dir, "./output");
+        assert!(cmd.convert_to_webp);
+    }
+
+    #[test]
+    fn test_parse_args_with_only_resources() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "--only-resources".to_string(),
+            "images,css".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_ok());
+        
+        let cmd = result.unwrap();
+        assert_eq!(cmd.url, "https://example.com");
+        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.only_resources, Some(vec!["images".to_string(), "css".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_args_with_depth_and_concurrent() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "-d".to_string(),
+            "5".to_string(),
+            "-c".to_string(),
+            "20".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_ok());
+        
+        let cmd = result.unwrap();
+        assert_eq!(cmd.url, "https://example.com");
+        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.max_depth, 5);
+        assert_eq!(cmd.max_concurrent, 20);
+    }
+
+    #[test]
+    fn test_parse_args_with_ignore_robots() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "--ignore-robots".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_ok());
+        
+        let cmd = result.unwrap();
+        assert_eq!(cmd.url, "https://example.com");
+        assert_eq!(cmd.output_dir, "./output");
+        assert!(cmd.ignore_robots);
+    }
+
+    #[test]
+    fn test_parse_args_with_download_external() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "--download-external".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_ok());
+        
+        let cmd = result.unwrap();
+        assert_eq!(cmd.url, "https://example.com");
+        assert_eq!(cmd.output_dir, "./output");
+        assert!(cmd.download_external);
+    }
+
+    #[test]
+    fn test_parse_args_missing_url() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_args_missing_output() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_args_invalid_depth() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "-d".to_string(),
+            "0".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_args_invalid_concurrent() {
+        let args = vec![
+            "website-mirror".to_string(),
+            "https://example.com".to_string(),
+            "-o".to_string(),
+            "./output".to_string(),
+            "-c".to_string(),
+            "0".to_string(),
+        ];
+        
+        let result = MirrorCommand::try_parse_from(args);
+        assert!(result.is_err());
+    }
+} 
