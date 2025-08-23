@@ -111,7 +111,7 @@ impl HtmlParser {
         })
     }
     
-    fn resolve_url(&self, url: &str) -> Result<Url> {
+    pub fn resolve_url(&self, url: &str) -> Result<Url> {
         if url.starts_with("http://") || url.starts_with("https://") {
             Ok(Url::parse(url)?)
         } else if url.starts_with("//") {
@@ -156,7 +156,7 @@ impl HtmlParser {
         Ok(path)
     }
     
-    fn sanitize_path(&self, path: &str) -> String {
+    pub fn sanitize_path(&self, path: &str) -> String {
         path.chars()
             .map(|c| match c {
                 '?' | '&' | '=' | '#' => '_',

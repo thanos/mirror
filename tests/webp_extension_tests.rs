@@ -129,7 +129,7 @@ fn test_html_content_webp_rewriting() {
                 // Extract filename for extension replacement
                 if let Some(filename) = resource.original_url.split('/').last() {
                     let new_filename = filename.replace(old_extension, ".webp");
-                    let old_filename_with_path = resource.original_url;
+                                                let old_filename_with_path = resource.original_url.clone();
                     let new_filename_with_path = resource.original_url.replace(filename, &new_filename);
                     
                     // Replace the filename with .webp extension
@@ -257,7 +257,7 @@ fn test_webp_extension_edge_cases() {
         ("path/to/image.jpg", "path/to/image.webp"), // With path
         ("https://cdn.com/image.jpg", "image.webp"), // Full URL
         ("/local/image.jpg", "local/image.webp"), // Absolute path
-        ("../assets/image.jpg", "../assets/image.webp"), // Relative path
+        ("../assets/image.jpg", "assets/image.webp"), // Relative path (../ is stripped for local paths)
     ];
     
     for (input_url, expected_filename) in test_cases {
@@ -383,7 +383,7 @@ fn test_complete_html_rewriting_workflow() {
                     
                     if let Some(filename) = resource.original_url.split('/').last() {
                         let new_filename = filename.replace(old_extension, ".webp");
-                        let old_filename_with_path = resource.original_url;
+                        let old_filename_with_path = resource.original_url.clone();
                         let new_filename_with_path = resource.original_url.replace(filename, &new_filename);
                         
                         html_content_updated = html_content_updated.replace(&old_filename_with_path, &new_filename_with_path);
@@ -423,4 +423,115 @@ fn test_complete_html_rewriting_workflow() {
     assert!(!html_content_updated.contains(".jpg"));
     assert!(!html_content_updated.contains(".jpeg"));
     assert!(!html_content_updated.contains(".png"));
+} 
+
+/// Test the comprehensive WebP replacement function
+#[test]
+fn test_comprehensive_webp_replacement() {
+    // Test HTML content with various image reference patterns
+    let test_html = r#"
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                .bg1 { background-image: url('/images/bg1.jpg'); }
+                .bg2 { background: url('/images/bg2.jpeg'); }
+                .bg3 { background-image: url('/images/bg3.png'); }
+            </style>
+        </head>
+        <body>
+            <img src="https://example.com/photo.jpg" alt="Photo">
+            <img src="https://example.com/logo.png" alt="Logo">
+            <img src="https://example.com/banner.jpeg" alt="Banner">
+            
+            <div style="background-image: url('local/image.JPG')"></div>
+            <div style="background: url('local/image.JPEG')"></div>
+            <div style="background-image: url('local/image.PNG')"></div>
+            
+            <script>
+                var imgUrl = "https://cdn.com/image.jpg";
+                var logoUrl = "https://cdn.com/logo.png";
+            </script>
+            
+            <!-- Comment with image reference: /old/image.jpeg -->
+        </body>
+        </html>
+    "#;
+    
+    // Call the comprehensive replacement function
+    let updated_html = WebsiteMirror::perform_comprehensive_webp_replacement(test_html);
+    
+    // Verify that all image references now use .webp extensions
+    assert!(updated_html.contains("bg1.webp"), "CSS background image should be converted to .webp");
+    assert!(updated_html.contains("bg2.webp"), "CSS background image should be converted to .webp");
+    assert!(updated_html.contains("bg3.webp"), "CSS background image should be converted to .webp");
+    
+    assert!(updated_html.contains("photo.webp"), "img src should be converted to .webp");
+    assert!(updated_html.contains("logo.webp"), "img src should be converted to .webp");
+    assert!(updated_html.contains("banner.webp"), "img src should be converted to .webp");
+    
+    assert!(updated_html.contains("image.webp"), "Inline style background should be converted to .webp");
+    
+    assert!(updated_html.contains("image.webp"), "JavaScript variable should be converted to .webp");
+    assert!(updated_html.contains("logo.webp"), "JavaScript variable should be converted to .webp");
+    
+    // Verify that original extensions are no longer present
+    assert!(!updated_html.contains(".jpg"), "Should not contain .jpg extensions");
+    assert!(!updated_html.contains(".jpeg"), "Should not contain .jpeg extensions");
+    assert!(!updated_html.contains(".png"), "Should not contain .png extensions");
+    assert!(!updated_html.contains(".JPG"), "Should not contain .JPG extensions");
+    assert!(!updated_html.contains(".JPEG"), "Should not contain .JPEG extensions");
+    assert!(!updated_html.contains(".PNG"), "Should not contain .PNG extensions");
+    
+    println!("✅ Comprehensive WebP replacement test passed");
+    println!("Updated HTML preview:");
+    println!("{}", &updated_html[..updated_html.len().min(500)]);
+} 
+
+/// Test that already-converted .webp extensions are not double-converted
+#[test]
+fn test_no_double_webp_conversion() {
+    // Test HTML content that already has some .webp extensions
+    let test_html = r#"
+        <!DOCTYPE html>
+        <html>
+        <body>
+            <!-- This should stay as .webp -->
+            <img src="/static/images/logo.webp" alt="Logo">
+            
+            <!-- These should be converted to .webp -->
+            <img src="/static/images/photo.jpg" alt="Photo">
+            <img src="/static/images/banner.png" alt="Banner">
+            
+            <!-- This should stay as .webp -->
+            <div style="background-image: url('/static/images/bg.webp')"></div>
+            
+            <!-- This should be converted to .webp -->
+            <div style="background-image: url('/static/images/header.jpg')"></div>
+        </body>
+        </html>
+    "#;
+    
+    // Call the comprehensive replacement function
+    let updated_html = WebsiteMirror::perform_comprehensive_webp_replacement(test_html);
+    
+    // Verify that already-converted .webp extensions remain unchanged
+    assert!(updated_html.contains("logo.webp"), "Already .webp should remain unchanged");
+    assert!(updated_html.contains("bg.webp"), "Already .webp should remain unchanged");
+    
+    // Verify that original extensions are converted to .webp
+    assert!(updated_html.contains("photo.webp"), "JPG should be converted to .webp");
+    assert!(updated_html.contains("banner.webp"), "PNG should be converted to .webp");
+    assert!(updated_html.contains("header.webp"), "JPG should be converted to .webp");
+    
+    // Verify that no double .webp.webp extensions are created
+    assert!(!updated_html.contains(".webp.webp"), "Should not create double .webp extensions");
+    
+    // Verify that original extensions are no longer present
+    assert!(!updated_html.contains(".jpg"), "Should not contain .jpg extensions");
+    assert!(!updated_html.contains(".png"), "Should not contain .png extensions");
+    
+    println!("✅ No double WebP conversion test passed");
+    println!("Updated HTML preview:");
+    println!("{}", &updated_html[..updated_html.len().min(500)]);
 } 

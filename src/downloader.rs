@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::cmp::Ordering;
+use regex::Regex;
 
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
@@ -69,14 +70,14 @@ impl PartialOrd for DownloadTask {
 
 #[derive(Clone, Debug)]
 pub struct WebsiteMirror {
-    base_url: String,
-    output_dir: PathBuf,
-    max_depth: usize,
-    max_concurrent: usize,
-    ignore_robots: bool,
-    download_external: bool,
-    only_resources: Option<Vec<String>>,
-    convert_to_webp: bool,
+    pub base_url: String,
+    pub output_dir: PathBuf,
+    pub max_depth: usize,
+    pub max_concurrent: usize,
+    pub ignore_robots: bool,
+    pub download_external: bool,
+    pub only_resources: Option<Vec<String>>,
+    pub convert_to_webp: bool,
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
@@ -103,14 +104,18 @@ impl WebsiteMirror {
     }
 
     /// Static version for use in functions without self access
-    fn get_local_path_for_resource_static(html_parser: &HtmlParser, original_url: &str, convert_to_webp: bool, current_html_path: &str) -> Result<String> {
+    pub fn get_local_path_for_resource_static(html_parser: &HtmlParser, original_url: &str, convert_to_webp: bool, current_html_path: &str) -> Result<String> {
         let local_path = html_parser.url_to_local_path_string(original_url)?;
         
         // Convert image extensions to WebP for JPEG/PNG files if the flag is enabled
-        let final_local_path = if convert_to_webp && (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png")) {
+        let final_local_path = if convert_to_webp && (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png") ||
+                                                    original_url.ends_with(".JPG") || original_url.ends_with(".JPEG") || original_url.ends_with(".PNG")) {
             local_path.replace(".jpg", ".webp")
                      .replace(".jpeg", ".webp")
                      .replace(".png", ".webp")
+                     .replace(".JPG", ".webp")
+                     .replace(".JPEG", ".webp")
+                     .replace(".PNG", ".webp")
         } else {
             local_path
         };
@@ -135,6 +140,67 @@ impl WebsiteMirror {
             Some(relative) => relative.to_string_lossy().to_string(),
             None => to_path.to_string(), // Fallback to absolute path
         }
+    }
+
+    /// Perform comprehensive WebP extension replacement for any remaining image references
+    pub fn perform_comprehensive_webp_replacement(html_content: &str) -> String {
+        let mut updated_content = html_content.to_string();
+        
+        // First, do simple string replacements for all image extensions
+        // This catches most cases including those in JavaScript, CSS, and HTML
+        // Use a two-pass approach to avoid double-converting already .webp files
+        
+        // Pass 1: Mark already-converted .webp files with a temporary marker
+        updated_content = updated_content.replace(".webp", "___WEBP_MARKER___");
+        
+        // Pass 2: Convert remaining image extensions to .webp
+        let simple_replacements = vec![
+            (".jpg", ".webp"),
+            (".jpeg", ".webp"),
+            (".png", ".webp"),
+            (".JPG", ".webp"),
+            (".JPEG", ".webp"),
+            (".PNG", ".webp"),
+        ];
+        
+        for (old_ext, new_ext) in simple_replacements {
+            let before_count = updated_content.matches(old_ext).count();
+            updated_content = updated_content.replace(old_ext, new_ext);
+            let after_count = updated_content.matches(new_ext).count();
+            
+            if before_count > 0 {
+                println!("🔍 Simple WebP replacement: {} -> {} ({} replacements)", 
+                         old_ext, new_ext, after_count);
+            }
+        }
+        
+        // Pass 3: Restore the original .webp files
+        updated_content = updated_content.replace("___WEBP_MARKER___", ".webp");
+        
+        // Then use regex patterns for more specific cases that might have been missed
+        // These patterns will now work correctly since we've already handled the double-conversion issue
+        let patterns = vec![
+            // URLs in quotes that might have been missed
+            (r#"url\(["']?([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']?\)"#, r#"url($1.webp)"#),
+            // Src attributes that might have been missed
+            (r#"src=["']([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']"#, r#"src="$1.webp""#),
+            // Background image URLs that might have been missed
+            (r#"background-image:\s*url\(["']?([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']?\)"#, r#"background-image: url($1.webp)"#),
+        ];
+        
+        for (pattern, replacement) in patterns {
+            let regex = regex::Regex::new(pattern).unwrap();
+            let before_count = regex.find_iter(&updated_content).count();
+            updated_content = regex.replace_all(&updated_content, replacement).to_string();
+            let after_count = regex.find_iter(&updated_content).count();
+            
+            if before_count > 0 {
+                println!("🔍 Regex WebP replacement: {} -> {} ({} replacements)", 
+                         pattern, replacement, after_count);
+            }
+        }
+        
+        updated_content
     }
 
     /// Convert JPEG/PNG images to WebP format with good quality lossy compression
@@ -173,7 +239,7 @@ impl WebsiteMirror {
     }
 
     /// Check if a resource type should be processed based on the only_resources filter
-    fn should_process_resource_type(&self, resource_type: &ResourceType) -> bool {
+    pub fn should_process_resource_type(&self, resource_type: &ResourceType) -> bool {
         if let Some(ref only_resources) = self.only_resources {
             let type_str = match resource_type {
                 ResourceType::Image => "images",
@@ -526,19 +592,20 @@ impl WebsiteMirror {
                         }
                         
                         // If this is a WebP conversion, also update any remaining references to the old extension
-                        if convert_to_webp && (resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".png")) {
-                            let old_extension = if resource.original_url.ends_with(".jpg") {
-                                ".jpg"
-                            } else if resource.original_url.ends_with(".jpeg") {
-                                ".jpeg"
+                        if convert_to_webp && (resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".png") ||
+                                             resource.original_url.ends_with(".JPG") || resource.original_url.ends_with(".JPEG") || resource.original_url.ends_with(".PNG")) {
+                            let old_extension = if resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".JPG") {
+                                if resource.original_url.ends_with(".jpg") { ".jpg" } else { ".JPG" }
+                            } else if resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".JPEG") {
+                                if resource.original_url.ends_with(".jpeg") { ".jpeg" } else { ".JPEG" }
                             } else {
-                                ".png"
+                                if resource.original_url.ends_with(".png") { ".png" } else { ".PNG" }
                             };
                             
                             // Extract just the filename part for extension replacement
                             if let Some(filename) = resource.original_url.split('/').last() {
                                 let new_filename = filename.replace(old_extension, ".webp");
-                                let old_filename_with_path = resource.original_url;
+                                let old_filename_with_path = resource.original_url.clone();
                                 let new_filename_with_path = resource.original_url.replace(filename, &new_filename);
                                 
                                 // Replace the filename with .webp extension
@@ -602,19 +669,20 @@ impl WebsiteMirror {
                         }
                         
                         // If this is a WebP conversion, also update any remaining references to the old extension
-                        if convert_to_webp && (resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".png")) {
-                            let old_extension = if resource.original_url.ends_with(".jpg") {
-                                ".jpg"
-                            } else if resource.original_url.ends_with(".jpeg") {
-                                ".jpeg"
+                        if convert_to_webp && (resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".png") ||
+                                             resource.original_url.ends_with(".JPG") || resource.original_url.ends_with(".JPEG") || resource.original_url.ends_with(".PNG")) {
+                            let old_extension = if resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".JPG") {
+                                if resource.original_url.ends_with(".jpg") { ".jpg" } else { ".JPG" }
+                            } else if resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".JPEG") {
+                                if resource.original_url.ends_with(".jpeg") { ".jpeg" } else { ".JPEG" }
                             } else {
-                                ".png"
+                                if resource.original_url.ends_with(".png") { ".png" } else { ".PNG" }
                             };
                             
                             // Extract just the filename part for extension replacement
                             if let Some(filename) = resource.original_url.split('/').last() {
                                 let new_filename = filename.replace(old_extension, ".webp");
-                                let old_filename_with_path = resource.original_url;
+                                let old_filename_with_path = resource.original_url.clone();
                                 let new_filename_with_path = resource.original_url.replace(filename, &new_filename);
                                 
                                 // Replace the filename with .webp extension
@@ -630,6 +698,12 @@ impl WebsiteMirror {
                         }
                     }
                 }
+            }
+            
+            // Additional comprehensive WebP extension replacement for any remaining image references
+            if convert_to_webp {
+                println!("🔍 Performing comprehensive WebP extension replacement...");
+                html_content_updated = Self::perform_comprehensive_webp_replacement(&html_content_updated);
             }
             
             // Debug: Show a preview of the updated HTML content
@@ -770,22 +844,37 @@ impl WebsiteMirror {
         };
         
         // Convert images to WebP if they're JPEG or PNG and the flag is enabled
-        let (final_content, final_content_type, final_local_path) = if convert_to_webp && (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png")) {
+        let (final_content, final_content_type, final_local_path) = if convert_to_webp && (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png") ||
+                                                                                        url.ends_with(".JPG") || url.ends_with(".JPEG") || url.ends_with(".PNG")) {
             // Convert to WebP
             let webp_data = Self::convert_to_webp_static(&content, url)?;
             
-            // Change file extension to .webp
+            // Change file extension to .webp (handle both lowercase and uppercase)
             let webp_path = local_path.replace(".jpg", ".webp")
                                     .replace(".jpeg", ".webp")
-                                    .replace(".png", ".webp");
+                                    .replace(".png", ".webp")
+                                    .replace(".JPG", ".webp")
+                                    .replace(".JPEG", ".webp")
+                                    .replace(".PNG", ".webp");
             
             (webp_data, "image/webp".to_string(), webp_path)
         } else {
             // Keep original content and path
-            (content.to_vec(), content_type, local_path)
+            (content.to_vec(), content_type, local_path.clone())
         };
         
-        let saved_path = match file_manager.save_file(&final_local_path, &final_content, Some(&final_content_type)) {
+        // For WebP conversion, we need to save the file with the .webp extension
+        // but also ensure the path matches what will be used in HTML rewriting
+        let save_path = if convert_to_webp && (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png") ||
+                                              url.ends_with(".JPG") || url.ends_with(".JPEG") || url.ends_with(".PNG")) {
+            // Use the .webp path for saving
+            final_local_path.clone()
+        } else {
+            // Use the original path for saving
+            local_path.clone()
+        };
+        
+        let saved_path = match file_manager.save_file(&save_path, &final_content, Some(&final_content_type)) {
             Ok(path) => path,
             Err(e) => {
                 eprintln!("❌ Failed to save {} {}: {}", resource_type, url, e);
@@ -793,10 +882,10 @@ impl WebsiteMirror {
             }
         };
         
-        // Add to download cache
+        // Add to download cache - use the save_path to ensure consistency
         {
             let mut cache = download_cache.lock().unwrap();
-            cache.insert(url.to_string(), final_local_path.to_string());
+            cache.insert(url.to_string(), save_path.to_string());
         }
         
         println!("✅ Downloaded {} to: {}", resource_type, saved_path.display());

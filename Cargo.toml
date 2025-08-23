@@ -5,6 +5,10 @@ edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A CLI utility to mirror websites by downloading static copies of HTML, CSS, images, and JavaScript files"
 
+[lib]
+name = "website_mirror"
+path = "src/lib.rs"
+
 [[bin]]
 name = "website-mirror"
 path = "src/main.rs"

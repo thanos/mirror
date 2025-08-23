@@ -6,16 +6,16 @@ use std::fs;
 #[test]
 fn test_basic_mirror_setup() {
     let temp_dir = tempdir().unwrap();
-    let mirror = WebsiteMirror::new(
-        "https://example.com",
-        temp_dir.path().to_str().unwrap(),
-        3,
-        10,
-        false,
-        false,
-        None,
-        false
-    ).unwrap();
+            let mirror = WebsiteMirror::new(
+            "https://example.com",
+            temp_dir.path(),
+            3,
+            10,
+            false,
+            false,
+            None,
+            false
+        ).unwrap();
     
     assert_eq!(mirror.base_url.as_str(), "https://example.com");
     assert_eq!(mirror.max_depth, 3);
@@ -59,7 +59,7 @@ fn test_file_manager_integration() {
     let file_manager = FileManager::new(temp_dir.path()).unwrap();
     
     // Test saving multiple files
-    let files = vec![
+    let files: Vec<(&str, &[u8], Option<&str>)> = vec![
         ("test1.txt", b"Content 1", Some("text/plain")),
         ("subdir/test2.txt", b"Content 2", Some("text/plain")),
         ("test3.html", b"<html>Content 3</html>", Some("text/html")),

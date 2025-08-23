@@ -1,13 +1,7 @@
 use clap::Parser;
 use anyhow::Result;
 
-mod downloader;
-mod html_parser;
-mod file_manager;
-mod cli;
-
-use cli::MirrorCommand;
-use downloader::WebsiteMirror;
+use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror};
 
 #[tokio::main]
 async fn main() -> Result<()> {
