@@ -54,6 +54,22 @@ The utility now ensures that **every mirrored page will render completely offlin
 
 This means you can mirror a site and be confident it will work perfectly offline, even if it uses external resources from multiple domains.
 
+## 🎯 **Resource Type Filtering**
+
+The `--only-resources` flag allows you to mirror only specific types of resources without downloading HTML pages:
+
+- **`--only-resources images`** - Download only images (PNG, JPG, GIF, SVG, etc.)
+- **`--only-resources css`** - Download only CSS files
+- **`--only-resources js`** - Download only JavaScript files  
+- **`--only-resources html`** - Download only HTML pages
+- **`--only-resources images,css,js`** - Download images, CSS, and JavaScript (no HTML)
+
+This is useful for:
+- **Asset Caching**: Download only media files for offline use
+- **Style/Function Caching**: Cache CSS and JS without full page mirroring
+- **Selective Mirroring**: Focus on specific resource types for analysis
+- **Bandwidth Optimization**: Skip HTML content when only assets are needed
+
 ## 🚀 **Smart Download Cache & Enhanced Logging**
 
 ### **Download Cache System:**
@@ -134,6 +150,11 @@ cargo install --path .
 
 # High-performance mirroring
 ./website-mirror https://large-site.com --max-concurrent 50 --timeout 60
+
+# Mirror only specific resource types
+./website-mirror https://example.com --only-resources images,css
+./website-mirror https://example.com --only-resources js
+./website-mirror https://example.com --only-resources images
 ```
 
 ## Usage
@@ -173,6 +194,7 @@ cargo install --path .
 | `--max-concurrent` | -c | Maximum concurrent downloads | `10` |
 | `--ignore-robots` | -r | Ignore robots.txt restrictions | `false` |
 | `--download-external` | -e | Download external resources | `false` |
+| `--only-resources` | - | Mirror only specific resource types (images,css,js,html) | `all` |
 | `--user-agent` | -u | Custom user agent string | `WebsiteMirror/1.0` |
 | `--follow-redirects` | -f | Follow HTTP redirects | `true` |
 | `--timeout` | -t | Request timeout in seconds | `30` |
