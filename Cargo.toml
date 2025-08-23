@@ -1,0 +1,33 @@
+[package]
+name = "website-mirror"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A CLI utility to mirror websites by downloading static copies of HTML, CSS, images, and JavaScript files"
+
+[[bin]]
+name = "website-mirror"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["stream", "json", "rustls-tls", "cookies"] }
+url = "2.4"
+clap = { version = "4.4", features = ["derive"] }
+futures = "0.3"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.0"
+html5ever = "0.26"
+markup5ever_rcdom = "0.2"
+select = "0.6"
+mime = "0.3"
+mime_guess = "2.0"
+pathdiff = "0.2"
+indicatif = "0.17"
+console = "0.15"
+colored = "2.0"
+rustls = "0.21"
+rustls-pemfile = "1.0"
+webpki-roots = "0.25" 
