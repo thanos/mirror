@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
+use webp::Encoder;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadPriority {
@@ -74,6 +75,7 @@ pub struct WebsiteMirror {
     ignore_robots: bool,
     download_external: bool,
     only_resources: Option<Vec<String>>,
+    convert_to_webp: bool,
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
@@ -84,6 +86,71 @@ pub struct WebsiteMirror {
 }
 
 impl WebsiteMirror {
+    /// Get the local path for a resource, converting image extensions to WebP if needed
+    fn get_local_path_for_resource(&self, html_parser: &HtmlParser, original_url: &str) -> Result<String> {
+        let local_path = html_parser.url_to_local_path_string(original_url)?;
+        
+        // Convert image extensions to WebP for JPEG/PNG files if the flag is enabled
+        if self.convert_to_webp && (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png")) {
+            let webp_path = local_path.replace(".jpg", ".webp")
+                                    .replace(".jpeg", ".webp")
+                                    .replace(".png", ".webp");
+            Ok(webp_path)
+        } else {
+            Ok(local_path)
+        }
+    }
+
+    /// Static version for use in functions without self access
+    fn get_local_path_for_resource_static(html_parser: &HtmlParser, original_url: &str, convert_to_webp: bool) -> Result<String> {
+        let local_path = html_parser.url_to_local_path_string(original_url)?;
+        
+        // Convert image extensions to WebP for JPEG/PNG files if the flag is enabled
+        if convert_to_webp && (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png")) {
+            let webp_path = local_path.replace(".jpg", ".webp")
+                                    .replace(".jpeg", ".webp")
+                                    .replace(".png", ".webp");
+            Ok(webp_path)
+        } else {
+            Ok(local_path)
+        }
+    }
+
+    /// Convert JPEG/PNG images to WebP format with good quality lossy compression
+    fn convert_to_webp(&self, image_data: &[u8], original_url: &str) -> Result<Vec<u8>> {
+        Self::convert_to_webp_static(image_data, original_url)
+    }
+
+    /// Static version for use in functions without self access
+    fn convert_to_webp_static(image_data: &[u8], original_url: &str) -> Result<Vec<u8>> {
+        // Decode the image
+        let img = match image::load_from_memory(image_data) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("⚠️  Failed to decode image {}: {}", original_url, e);
+                return Ok(image_data.to_vec()); // Return original data if conversion fails
+            }
+        };
+        
+        // Convert to RGB8 if needed (WebP encoder expects RGB)
+        let rgb_img = img.to_rgb8();
+        
+        // Create WebP encoder with good quality (80/100)
+        let encoder = Encoder::from_rgb(&rgb_img, rgb_img.width(), rgb_img.height());
+        
+        // Encode with quality 80 (good balance between size and quality)
+        let webp_data = encoder.encode(80.0);
+        
+        let original_size = image_data.len();
+        let webp_size = webp_data.len();
+        let compression_ratio = (original_size as f64 / webp_size as f64 * 100.0) as u32;
+        
+        println!("🔄 Converted {} to WebP: {} -> {} bytes ({}% of original size)", 
+                 original_url, original_size, webp_size, compression_ratio);
+        
+        Ok(webp_data.to_vec())
+    }
+
     /// Check if a resource type should be processed based on the only_resources filter
     fn should_process_resource_type(&self, resource_type: &ResourceType) -> bool {
         if let Some(ref only_resources) = self.only_resources {
@@ -109,6 +176,7 @@ impl WebsiteMirror {
         ignore_robots: bool,
         download_external: bool,
         only_resources: Option<Vec<String>>,
+        convert_to_webp: bool,
     ) -> Result<Self> {
         let client = Self::build_http_client()?;
         let file_manager = FileManager::new(output_dir)?;
@@ -122,6 +190,7 @@ impl WebsiteMirror {
             ignore_robots,
             download_external,
             only_resources,
+            convert_to_webp,
             client,
             file_manager,
             html_parser,
@@ -215,6 +284,7 @@ impl WebsiteMirror {
                             priority,
                             resource_type,
                             &self.only_resources,
+                            self.convert_to_webp,
                         ).await {
                     eprintln!("❌ Error downloading {}: {}", url, e);
                 }
@@ -259,6 +329,7 @@ impl WebsiteMirror {
         priority: DownloadPriority,
         resource_type: Option<ResourceType>,
         only_resources: &Option<Vec<String>>,
+        convert_to_webp: bool,
     ) -> Result<()> {
         // Check if already visited
         {
@@ -414,11 +485,12 @@ impl WebsiteMirror {
                     &page_html_parser,
                     &resource.original_url,
                     download_cache,
+                    convert_to_webp,
                 ).await {
                     eprintln!("⚠️  Failed to download CRITICAL {} resource {}: {}", resource_type_str, resource.original_url, e);
                 } else {
                     // Get the local path for this resource and update HTML content
-                    if let Ok(local_path) = page_html_parser.url_to_local_path_string(&resource.original_url) {
+                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp) {
                         let before_count = html_content_updated.matches(&resource.original_url).count();
                         html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
                         let after_count = html_content_updated.matches(&local_path).count();
@@ -461,11 +533,12 @@ impl WebsiteMirror {
                     &page_html_parser,
                     &resource.original_url,
                     download_cache,
+                    convert_to_webp,
                 ).await {
                     eprintln!("⚠️  Failed to download NORMAL {} resource {}: {}", resource_type_str, resource.original_url, e);
                 } else {
                     // Get the local path for this resource and update HTML content
-                    if let Ok(local_path) = page_html_parser.url_to_local_path_string(&resource.original_url) {
+                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp) {
                         let before_count = html_content_updated.matches(&resource.original_url).count();
                         html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
                         let after_count = html_content_updated.matches(&local_path).count();
@@ -512,6 +585,7 @@ impl WebsiteMirror {
                     &page_html_parser,
                     &resource.original_url,
                     download_cache,
+                    convert_to_webp,
                 ).await {
                     eprintln!("⚠️  Failed to download background image {}: {}", resource.original_url, e);
                 }
@@ -540,6 +614,7 @@ impl WebsiteMirror {
         html_parser: &HtmlParser,
         url: &str,
         download_cache: &Arc<Mutex<HashMap<String, String>>>,
+        convert_to_webp: bool,
     ) -> Result<()> {
         // Check if already downloaded using cache
         {
@@ -615,7 +690,23 @@ impl WebsiteMirror {
             }
         };
         
-        let saved_path = match file_manager.save_file(&local_path, &content, Some(&content_type)) {
+        // Convert images to WebP if they're JPEG or PNG and the flag is enabled
+        let (final_content, final_content_type, final_local_path) = if convert_to_webp && (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png")) {
+            // Convert to WebP
+            let webp_data = Self::convert_to_webp_static(&content, url)?;
+            
+            // Change file extension to .webp
+            let webp_path = local_path.replace(".jpg", ".webp")
+                                    .replace(".jpeg", ".webp")
+                                    .replace(".png", ".webp");
+            
+            (webp_data, "image/webp".to_string(), webp_path)
+        } else {
+            // Keep original content and path
+            (content.to_vec(), content_type, local_path)
+        };
+        
+        let saved_path = match file_manager.save_file(&final_local_path, &final_content, Some(&final_content_type)) {
             Ok(path) => path,
             Err(e) => {
                 eprintln!("❌ Failed to save {} {}: {}", resource_type, url, e);
@@ -626,7 +717,7 @@ impl WebsiteMirror {
         // Add to download cache
         {
             let mut cache = download_cache.lock().unwrap();
-            cache.insert(url.to_string(), local_path.clone());
+            cache.insert(url.to_string(), final_local_path.to_string());
         }
         
         println!("✅ Downloaded {} to: {}", resource_type, saved_path.display());

@@ -20,6 +20,9 @@ I've successfully created a comprehensive website mirroring CLI utility in Rust 
 10. **Full recursive mirroring** - `--full-mirror` flag for comprehensive mirroring with all options enabled
 11. **Smart download cache** - each unique file is downloaded only once, preventing duplicates and improving efficiency
 12. **Enhanced resource logging** - clear visibility into what types of resources are being processed and downloaded
+13. **External image URL resolution** - Automatically converts external CDN image URLs to local paths in HTML content
+14. **Priority-based processing** - CSS/JS first, then HTML, then images for optimal offline rendering
+15. **WebP image conversion** - Automatically converts JPEG/PNG images to WebP format for better compression
 
 ### 🔧 **Key Components:**
 
@@ -42,6 +45,9 @@ I've successfully created a comprehensive website mirroring CLI utility in Rust 
 - 🎯 **Depth Control**: Configurable crawling depth limits
 - 💾 **Smart Download Cache**: Prevents duplicate downloads and improves efficiency
 - 🔍 **Enhanced Resource Logging**: Clear visibility into resource types and download status
+- 🖼️ **External Image Resolution**: Automatically converts external CDN image URLs to local paths
+- ⚡ **Priority Processing**: CSS/JS first, then HTML, then images for optimal offline rendering
+- 🖼️ **WebP Conversion**: Automatically converts JPEG/PNG images to WebP for better compression
 
 ## 🎯 **Zero 404 Guarantee**
 
@@ -69,6 +75,22 @@ This is useful for:
 - **Style/Function Caching**: Cache CSS and JS without full page mirroring
 - **Selective Mirroring**: Focus on specific resource types for analysis
 - **Bandwidth Optimization**: Skip HTML content when only assets are needed
+
+## 🖼️ **WebP Image Conversion**
+
+The `--convert-to-webp` flag automatically converts JPEG and PNG images to WebP format during mirroring:
+
+- **Automatic Conversion**: JPEG (.jpg, .jpeg) and PNG (.png) files are converted to WebP
+- **Quality Optimization**: Uses quality 80/100 for optimal balance between file size and visual quality
+- **File Size Reduction**: Typically reduces image file sizes by 25-50% while maintaining visual quality
+- **HTML Updates**: Automatically updates HTML content to reference the new .webp files
+- **Fallback Support**: If conversion fails, the original image is preserved
+
+**Benefits:**
+- **Smaller Storage**: Reduced disk space usage for mirrored sites
+- **Faster Loading**: Smaller files load faster in browsers
+- **Modern Format**: WebP is supported by all modern browsers
+- **Bandwidth Savings**: Reduced transfer sizes for hosted mirrors
 
 ## 🔧 **Recent Fixes & Improvements**
 
@@ -170,6 +192,10 @@ cargo install --path .
 ./website-mirror https://example.com --only-resources images,css
 ./website-mirror https://example.com --only-resources js
 ./website-mirror https://example.com --only-resources images
+
+# Convert images to WebP for better compression
+./website-mirror https://example.com --convert-to-webp
+./website-mirror https://example.com --only-resources images --convert-to-webp
 ```
 
 ## Usage
@@ -210,6 +236,7 @@ cargo install --path .
 | `--ignore-robots` | -r | Ignore robots.txt restrictions | `false` |
 | `--download-external` | -e | Download external resources | `false` |
 | `--only-resources` | - | Mirror only specific resource types (images,css,js,html) | `all` |
+| `--convert-to-webp` | - | Convert JPEG/PNG images to WebP format for better compression | `false` |
 | `--user-agent` | -u | Custom user agent string | `WebsiteMirror/1.0` |
 | `--follow-redirects` | -f | Follow HTTP redirects | `true` |
 | `--timeout` | -t | Request timeout in seconds | `30` |

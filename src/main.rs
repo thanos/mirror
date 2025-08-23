@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
                 ignore_robots,
                 download_external,
                 args.only_resources.clone(),
+                args.convert_to_webp,
             )?;
     
     mirror.mirror_website().await?;

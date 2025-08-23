@@ -54,4 +54,8 @@ pub struct MirrorCommand {
             /// Examples: --only-resources images,css or --only-resources js
             #[arg(long, value_delimiter = ',')]
             pub only_resources: Option<Vec<String>>,
+
+            /// Convert JPEG/PNG images to WebP format for better compression
+            #[arg(long)]
+            pub convert_to_webp: bool,
 } 
