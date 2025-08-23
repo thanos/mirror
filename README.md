@@ -107,6 +107,12 @@ The `--convert-to-webp` flag automatically converts JPEG and PNG images to WebP 
 - **Background images** from CSS are automatically extracted and downloaded
 - **Zero 404 Guarantee**: All media files are downloaded to ensure pages render without missing resources
 
+### **Relative Path Resolution (Fixed)**
+- **Issue**: Image paths in mirrored HTML files had incorrect base/root paths when HTML files were in subdirectories
+- **Solution**: Implemented proper relative path calculation using `pathdiff` crate to generate correct `../../` prefixes
+- **Result**: All resource links in HTML now use proper relative paths from the HTML file location to the resource files
+- **Example**: HTML at `artfestival/artists/index.html` now correctly references images as `../../mykonos-biennale-cache*/*/image.jpg`
+
 ## 🚀 **Smart Download Cache & Enhanced Logging**
 
 ### **Download Cache System:**

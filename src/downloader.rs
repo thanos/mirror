@@ -102,17 +102,37 @@ impl WebsiteMirror {
     }
 
     /// Static version for use in functions without self access
-    fn get_local_path_for_resource_static(html_parser: &HtmlParser, original_url: &str, convert_to_webp: bool) -> Result<String> {
+    fn get_local_path_for_resource_static(html_parser: &HtmlParser, original_url: &str, convert_to_webp: bool, current_html_path: &str) -> Result<String> {
         let local_path = html_parser.url_to_local_path_string(original_url)?;
         
         // Convert image extensions to WebP for JPEG/PNG files if the flag is enabled
-        if convert_to_webp && (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png")) {
-            let webp_path = local_path.replace(".jpg", ".webp")
-                                    .replace(".jpeg", ".webp")
-                                    .replace(".png", ".webp");
-            Ok(webp_path)
+        let final_local_path = if convert_to_webp && (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png")) {
+            local_path.replace(".jpg", ".webp")
+                     .replace(".jpeg", ".webp")
+                     .replace(".png", ".webp")
         } else {
-            Ok(local_path)
+            local_path
+        };
+        
+        // Calculate relative path from current HTML file to the resource
+        let relative_path = Self::calculate_relative_path(current_html_path, &final_local_path);
+        Ok(relative_path)
+    }
+
+    /// Calculate relative path from source file to target file
+    fn calculate_relative_path(from_path: &str, to_path: &str) -> String {
+        use std::path::Path;
+        
+        let from = Path::new(from_path);
+        let to = Path::new(to_path);
+        
+        // Get the directory of the source file
+        let from_dir = from.parent().unwrap_or(Path::new(""));
+        
+        // Calculate relative path
+        match pathdiff::diff_paths(to, from_dir) {
+            Some(relative) => relative.to_string_lossy().to_string(),
+            None => to_path.to_string(), // Fallback to absolute path
         }
     }
 
@@ -396,6 +416,9 @@ impl WebsiteMirror {
             let page_html_parser = HtmlParser::new(url)?;
             let resources = page_html_parser.extract_resources(&html_content)?;
             
+            // Calculate the local path for the current HTML file (needed for relative path calculations)
+            let current_html_path = page_html_parser.url_to_local_path_string(url)?;
+            
             // Helper function to check if a resource type should be processed
             let should_process_resource_type = |resource_type: &ResourceType| -> bool {
                 if let Some(ref only_resources) = only_resources {
@@ -490,7 +513,7 @@ impl WebsiteMirror {
                     eprintln!("⚠️  Failed to download CRITICAL {} resource {}: {}", resource_type_str, resource.original_url, e);
                 } else {
                     // Get the local path for this resource and update HTML content
-                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp) {
+                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp, &current_html_path) {
                         let before_count = html_content_updated.matches(&resource.original_url).count();
                         html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
                         let after_count = html_content_updated.matches(&local_path).count();
@@ -538,7 +561,7 @@ impl WebsiteMirror {
                     eprintln!("⚠️  Failed to download NORMAL {} resource {}: {}", resource_type_str, resource.original_url, e);
                 } else {
                     // Get the local path for this resource and update HTML content
-                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp) {
+                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp, &current_html_path) {
                         let before_count = html_content_updated.matches(&resource.original_url).count();
                         html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
                         let after_count = html_content_updated.matches(&local_path).count();
@@ -558,9 +581,8 @@ impl WebsiteMirror {
             println!("{}", preview);
             
             // Save the updated HTML with local paths for resources
-            let local_path = page_html_parser.url_to_local_path_string(url)?;
-            println!("💾 Saving HTML to: {}", local_path);
-            let saved_path = file_manager.save_file(&local_path, html_content_updated.as_bytes(), Some(&content_type))?;
+            println!("💾 Saving HTML to: {}", current_html_path);
+            let saved_path = file_manager.save_file(&current_html_path, html_content_updated.as_bytes(), Some(&content_type))?;
             println!("✅ Saved HTML to: {}", saved_path.display());
             
             // Note: Links are now processed in the priority-based resource processing above
