@@ -4,7 +4,6 @@ use std::fs;
 use mime_guess::MimeGuess;
 use std::io::Write;
 
-#[derive(Clone)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileManager {
     base_dir: PathBuf,

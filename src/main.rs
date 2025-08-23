@@ -42,7 +42,6 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_parse_args() {
@@ -58,7 +57,7 @@ mod tests {
         
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
     }
 
     #[test]
@@ -76,7 +75,7 @@ mod tests {
         
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
         assert!(cmd.full_mirror);
     }
 
@@ -95,7 +94,7 @@ mod tests {
         
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
         assert!(cmd.convert_to_webp);
     }
 
@@ -115,7 +114,7 @@ mod tests {
         
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
         assert_eq!(cmd.only_resources, Some(vec!["images".to_string(), "css".to_string()]));
     }
 
@@ -137,7 +136,7 @@ mod tests {
         
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
         assert_eq!(cmd.max_depth, 5);
         assert_eq!(cmd.max_concurrent, 20);
     }
@@ -157,7 +156,7 @@ mod tests {
         
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
         assert!(cmd.ignore_robots);
     }
 
@@ -176,7 +175,7 @@ mod tests {
         
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir, "./output");
+        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
         assert!(cmd.download_external);
     }
 

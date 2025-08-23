@@ -73,7 +73,7 @@ mod tests {
         ]).unwrap();
         
         assert_eq!(args.url, "https://example.com");
-        assert_eq!(args.output_dir, "./output");
+        assert_eq!(args.output_dir.to_string_lossy(), "./output");
         assert_eq!(args.max_depth, 3);
         assert_eq!(args.max_concurrent, 10);
         assert_eq!(args.ignore_robots, false);
@@ -95,7 +95,7 @@ mod tests {
         ]).unwrap();
         
         assert_eq!(args.url, "https://example.com");
-        assert_eq!(args.output_dir, "./output");
+        assert_eq!(args.output_dir.to_string_lossy(), "./output");
         assert_eq!(args.max_depth, 5);
         assert_eq!(args.max_concurrent, 20);
         assert_eq!(args.ignore_robots, true);
