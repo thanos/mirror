@@ -70,6 +70,21 @@ This is useful for:
 - **Selective Mirroring**: Focus on specific resource types for analysis
 - **Bandwidth Optimization**: Skip HTML content when only assets are needed
 
+## 🔧 **Recent Fixes & Improvements**
+
+### **External Image URL Resolution (Fixed)**
+- **Issue**: External images from CDNs (AWS S3, Cloudflare, etc.) were being downloaded but their URLs in HTML were not being updated to use local paths
+- **Solution**: Enhanced HTML content processing to ensure all downloaded resources (CSS, JS, images) have their URLs updated to local paths
+- **Result**: Mirrored sites now work completely offline with all images displaying correctly from local copies
+- **Example**: AWS S3 images like `http://com.mykonosbiennale.static.s3.amazonaws.com/...` are now properly converted to local paths like `mykonos-biennale-cache05/fb/...`
+
+### **Priority-Based Resource Processing**
+- **CSS and JavaScript files** are downloaded first (Critical priority)
+- **HTML pages** are queued for crawling (High priority)  
+- **Images and other resources** are downloaded last (Normal priority)
+- **Background images** from CSS are automatically extracted and downloaded
+- **Zero 404 Guarantee**: All media files are downloaded to ensure pages render without missing resources
+
 ## 🚀 **Smart Download Cache & Enhanced Logging**
 
 ### **Download Cache System:**
