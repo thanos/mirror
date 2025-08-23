@@ -419,8 +419,15 @@ impl WebsiteMirror {
                 } else {
                     // Get the local path for this resource and update HTML content
                     if let Ok(local_path) = page_html_parser.url_to_local_path_string(&resource.original_url) {
+                        let before_count = html_content_updated.matches(&resource.original_url).count();
                         html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
-                        println!("🔄 Updated HTML: {} -> {}", resource.original_url, local_path);
+                        let after_count = html_content_updated.matches(&local_path).count();
+                        println!("🔄 Updated HTML: {} -> {} ({} replacements)", resource.original_url, local_path, after_count);
+                        
+                        // Debug: Check if the replacement actually worked
+                        if before_count > 0 && after_count == 0 {
+                            eprintln!("⚠️  Warning: URL replacement may have failed for: {}", resource.original_url);
+                        }
                     }
                 }
             }
@@ -459,11 +466,23 @@ impl WebsiteMirror {
                 } else {
                     // Get the local path for this resource and update HTML content
                     if let Ok(local_path) = page_html_parser.url_to_local_path_string(&resource.original_url) {
+                        let before_count = html_content_updated.matches(&resource.original_url).count();
                         html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
-                        println!("🔄 Updated HTML: {} -> {}", resource.original_url, local_path);
+                        let after_count = html_content_updated.matches(&local_path).count();
+                        println!("🔄 Updated HTML: {} -> {} ({} replacements)", resource.original_url, local_path, after_count);
+                        
+                        // Debug: Check if the replacement actually worked
+                        if before_count > 0 && after_count == 0 {
+                            eprintln!("⚠️  Warning: URL replacement may have failed for: {}", resource.original_url);
+                        }
                     }
                 }
             }
+            
+            // Debug: Show a preview of the updated HTML content
+            println!("🔍 HTML content preview (first 500 chars):");
+            let preview = html_content_updated.chars().take(500).collect::<String>();
+            println!("{}", preview);
             
             // Save the updated HTML with local paths for resources
             let local_path = page_html_parser.url_to_local_path_string(url)?;
