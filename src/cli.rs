@@ -46,7 +46,12 @@ pub struct MirrorCommand {
     #[arg(long, default_value = "30")]
     pub timeout: u64,
     
-    /// Full recursive mirror with all options enabled
-    #[arg(long)]
-    pub full_mirror: bool,
+                /// Full recursive mirror with all options enabled
+            #[arg(long)]
+            pub full_mirror: bool,
+
+            /// Mirror only specific resource types (comma-separated: images,css,js,html)
+            /// Examples: --only-resources images,css or --only-resources js
+            #[arg(long, value_delimiter = ',')]
+            pub only_resources: Option<Vec<String>>,
 } 

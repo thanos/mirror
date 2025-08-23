@@ -22,14 +22,15 @@ async fn main() -> Result<()> {
         (args.max_depth, args.max_concurrent, args.ignore_robots, true)
     };
     
-    let mut mirror = WebsiteMirror::new(
-        &args.url,
-        &args.output_dir,
-        max_depth,
-        max_concurrent,
-        ignore_robots,
-        download_external,
-    )?;
+                let mut mirror = WebsiteMirror::new(
+                &args.url,
+                &args.output_dir,
+                max_depth,
+                max_concurrent,
+                ignore_robots,
+                download_external,
+                args.only_resources.clone(),
+            )?;
     
     mirror.mirror_website().await?;
     

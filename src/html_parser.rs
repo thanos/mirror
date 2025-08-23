@@ -10,7 +10,7 @@ pub struct ResourceLink {
     pub resource_type: ResourceType,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceType {
     CSS,
     JavaScript,

@@ -1,14 +1,70 @@
 use anyhow::Result;
 use reqwest::{Client, ClientBuilder, StatusCode};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashSet, HashMap, BinaryHeap};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 use std::path::{Path, PathBuf};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::cmp::Ordering;
 
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadPriority {
+    Critical = 0,    // CSS and JavaScript files
+    High = 1,        // HTML pages
+    Normal = 2,      // Images and other resources
+}
+
+impl PartialOrd for DownloadPriority {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DownloadPriority {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Lower numbers = higher priority
+        match (self, other) {
+            (DownloadPriority::Critical, DownloadPriority::Critical) => Ordering::Equal,
+            (DownloadPriority::Critical, _) => Ordering::Less,
+            (DownloadPriority::High, DownloadPriority::Critical) => Ordering::Greater,
+            (DownloadPriority::High, DownloadPriority::High) => Ordering::Equal,
+            (DownloadPriority::High, _) => Ordering::Less,
+            (DownloadPriority::Normal, DownloadPriority::Normal) => Ordering::Equal,
+            (DownloadPriority::Normal, _) => Ordering::Greater,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DownloadTask {
+    pub url: String,
+    pub depth: usize,
+    pub priority: DownloadPriority,
+    pub resource_type: Option<ResourceType>,
+}
+
+impl Ord for DownloadTask {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // First compare by priority (lower number = higher priority)
+        let priority_cmp = self.priority.cmp(&other.priority);
+        if priority_cmp != Ordering::Equal {
+            return priority_cmp;
+        }
+        
+        // If priorities are equal, lower depth = higher priority
+        other.depth.cmp(&self.depth)
+    }
+}
+
+impl PartialOrd for DownloadTask {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 pub struct WebsiteMirror {
     base_url: String,
@@ -17,15 +73,34 @@ pub struct WebsiteMirror {
     max_concurrent: usize,
     ignore_robots: bool,
     download_external: bool,
+    only_resources: Option<Vec<String>>,
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
     visited_urls: Arc<Mutex<HashSet<String>>>,
-    download_queue: Arc<Mutex<VecDeque<(String, usize)>>>,
+    download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
     semaphore: Arc<Semaphore>,
+    download_cache: Arc<Mutex<HashMap<String, String>>>, // URL -> local path mapping
 }
 
 impl WebsiteMirror {
+    /// Check if a resource type should be processed based on the only_resources filter
+    fn should_process_resource_type(&self, resource_type: &ResourceType) -> bool {
+        if let Some(ref only_resources) = self.only_resources {
+            let type_str = match resource_type {
+                ResourceType::Image => "images",
+                ResourceType::CSS => "css",
+                ResourceType::JavaScript => "js",
+                ResourceType::Link => "html",
+                ResourceType::Other => "other",
+            };
+            only_resources.iter().any(|r| r.to_lowercase() == type_str)
+        } else {
+            // If no filter specified, process all resource types
+            true
+        }
+    }
+
     pub fn new(
         base_url: &str,
         output_dir: &Path,
@@ -33,6 +108,7 @@ impl WebsiteMirror {
         max_concurrent: usize,
         ignore_robots: bool,
         download_external: bool,
+        only_resources: Option<Vec<String>>,
     ) -> Result<Self> {
         let client = Self::build_http_client()?;
         let file_manager = FileManager::new(output_dir)?;
@@ -45,12 +121,14 @@ impl WebsiteMirror {
             max_concurrent,
             ignore_robots,
             download_external,
+            only_resources,
             client,
             file_manager,
             html_parser,
             visited_urls: Arc::new(Mutex::new(HashSet::new())),
-            download_queue: Arc::new(Mutex::new(VecDeque::new())),
+            download_queue: Arc::new(Mutex::new(BinaryHeap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            download_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     
@@ -71,10 +149,18 @@ impl WebsiteMirror {
         println!("🔗 Max depth: {}", self.max_depth);
         println!("⚡ Max concurrent downloads: {}", self.max_concurrent);
         
-        // Add the base URL to the download queue
-        {
+        // Add the base URL to the download queue with high priority (HTML page)
+        // Only add HTML pages if we're not filtering to specific resource types
+        if self.only_resources.is_none() || self.should_process_resource_type(&ResourceType::Link) {
             let mut queue = self.download_queue.lock().unwrap();
-            queue.push_back((self.base_url.clone(), 0));
+            queue.push(DownloadTask {
+                url: self.base_url.clone(),
+                depth: 0,
+                priority: DownloadPriority::High,
+                resource_type: None,
+            });
+        } else {
+            println!("🔍 Resource filter active: skipping HTML page crawling");
         }
         
         let progress_bar = ProgressBar::new_spinner();
@@ -88,10 +174,14 @@ impl WebsiteMirror {
         loop {
             let download_task = {
                 let mut queue = self.download_queue.lock().unwrap();
-                queue.pop_front()
+                queue.pop()
             };
             
-            if let Some((url, depth)) = download_task {
+            if let Some(task) = download_task {
+                let url = task.url.clone();
+                let depth = task.depth;
+                let priority = task.priority.clone();
+                let resource_type = task.resource_type.clone();
                 // Check depth limit (0 means unlimited)
                 if self.max_depth > 0 && depth > self.max_depth {
                     continue;
@@ -102,6 +192,7 @@ impl WebsiteMirror {
                 let html_parser = self.html_parser.clone();
                 let visited_urls = self.visited_urls.clone();
                 let download_queue = self.download_queue.clone();
+                let download_cache = self.download_cache.clone();
                 
                 progress_bar.set_message(format!("Downloading: {}", url));
                 
@@ -110,17 +201,21 @@ impl WebsiteMirror {
                 
                 // Process the download directly instead of spawning a task
                 println!("🚀 Processing download for: {}", url);
-                if let Err(e) = Self::download_and_process_url(
-                    &client,
-                    &file_manager,
-                    &html_parser,
-                    &url,
-                    depth,
-                    &visited_urls,
-                    &download_queue,
-                    download_external,
-                    &base_url,
-                ).await {
+                                        if let Err(e) = Self::download_and_process_url(
+                            &client,
+                            &file_manager,
+                            &html_parser,
+                            &url,
+                            depth,
+                            &visited_urls,
+                            &download_queue,
+                            &download_cache,
+                            download_external,
+                            &base_url,
+                            priority,
+                            resource_type,
+                            &self.only_resources,
+                        ).await {
                     eprintln!("❌ Error downloading {}: {}", url, e);
                 }
                 println!("🏁 Download completed for: {}", url);
@@ -157,9 +252,13 @@ impl WebsiteMirror {
         url: &str,
         depth: usize,
         visited_urls: &Arc<Mutex<HashSet<String>>>,
-        download_queue: &Arc<Mutex<VecDeque<(String, usize)>>>,
+        download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
+        download_cache: &Arc<Mutex<HashMap<String, String>>>,
         download_external: bool,
         base_url: &str,
+        priority: DownloadPriority,
+        resource_type: Option<ResourceType>,
+        only_resources: &Option<Vec<String>>,
     ) -> Result<()> {
         // Check if already visited
         {
@@ -170,7 +269,12 @@ impl WebsiteMirror {
             visited.insert(url.to_string());
         }
         
-        println!("📥 Downloading: {} (depth: {})", url, depth);
+        let priority_str = match priority {
+            DownloadPriority::Critical => "🔥 CRITICAL",
+            DownloadPriority::High => "⚡ HIGH",
+            DownloadPriority::Normal => "📥 NORMAL",
+        };
+        println!("{} Downloading: {} (depth: {})", priority_str, url, depth);
         
         // Download the URL
         println!("🌐 Sending request to: {}", url);
@@ -221,32 +325,59 @@ impl WebsiteMirror {
             let page_html_parser = HtmlParser::new(url)?;
             let resources = page_html_parser.extract_resources(&html_content)?;
             
-            // Download ALL resources needed by this page to render properly
+            // Helper function to check if a resource type should be processed
+            let should_process_resource_type = |resource_type: &ResourceType| -> bool {
+                if let Some(ref only_resources) = only_resources {
+                    let type_str = match resource_type {
+                        ResourceType::Image => "images",
+                        ResourceType::CSS => "css",
+                        ResourceType::JavaScript => "js",
+                        ResourceType::Link => "html",
+                        ResourceType::Other => "other",
+                    };
+                    only_resources.iter().any(|r| r.to_lowercase() == type_str)
+                } else {
+                    // If no filter specified, process all resource types
+                    true
+                }
+            };
+            
+            // Process resources in priority order: CSS/JS first, then HTML, then images
+            let mut critical_resources = Vec::new();
+            let mut high_resources = Vec::new();
+            let mut normal_resources = Vec::new();
+            
+            // Categorize resources by priority
             for resource in &resources {
+                let priority = match resource.resource_type {
+                    ResourceType::CSS | ResourceType::JavaScript => DownloadPriority::Critical,
+                    ResourceType::Link => DownloadPriority::High,
+                    ResourceType::Image | ResourceType::Other => DownloadPriority::Normal,
+                };
+                
                 let should_download = match resource.resource_type {
                     ResourceType::Image | ResourceType::CSS | ResourceType::JavaScript => {
                         // Always download media files (images, CSS, JS) from any site
-                        // This ensures the page renders without 404 errors
-                        true
+                        // But respect the only_resources filter
+                        should_process_resource_type(&resource.resource_type)
                     },
                     ResourceType::Link => {
                         // Only download HTML pages from the target site
-                        resource.original_url.contains(base_url)
+                        // And respect the only_resources filter
+                        resource.original_url.contains(base_url) && should_process_resource_type(&resource.resource_type)
                     },
                     ResourceType::Other => {
                         // Download other resources only from target site
-                        resource.original_url.contains(base_url)
+                        // And respect the only_resources filter
+                        resource.original_url.contains(base_url) && should_process_resource_type(&resource.resource_type)
                     }
                 };
                 
                 if should_download {
-                    if let Err(e) = Self::download_resource(
-                        client,
-                        file_manager,
-                        &page_html_parser,
-                        &resource.original_url,
-                    ).await {
-                        eprintln!("⚠️  Failed to download resource {}: {}", resource.original_url, e);
+                    match priority {
+                        DownloadPriority::Critical => critical_resources.push(resource.clone()),
+                        DownloadPriority::High => high_resources.push(resource.clone()),
+                        DownloadPriority::Normal => normal_resources.push(resource.clone()),
                     }
                 } else if !resource.original_url.contains(base_url) {
                     // Log when we skip external HTML pages
@@ -254,32 +385,94 @@ impl WebsiteMirror {
                         ResourceType::Link => println!("⏭️  Skipping external page: {} (but will download its media)", resource.original_url),
                         _ => {}
                     }
+                } else if !should_process_resource_type(&resource.resource_type) {
+                    // Log when we skip resources due to filter
+                    let resource_type_str = match resource.resource_type {
+                        ResourceType::Image => "Image",
+                        ResourceType::CSS => "CSS",
+                        ResourceType::JavaScript => "JavaScript",
+                        ResourceType::Link => "Link",
+                        ResourceType::Other => "Other",
+                    };
+                    println!("🔍 Skipping {} due to resource filter: {}", resource_type_str, resource.original_url);
                 }
             }
             
-            // Convert HTML links to local paths
-            let modified_html = html_parser.convert_html_links(&html_content)?;
-            let modified_content = modified_html.as_bytes();
+            // Download critical resources first (CSS/JS) and collect local paths for HTML rewriting
+            let mut html_content_updated = html_content.to_string();
+            for resource in &critical_resources {
+                let resource_type_str = match resource.resource_type {
+                    ResourceType::CSS => "CSS",
+                    ResourceType::JavaScript => "JavaScript",
+                    _ => "Critical",
+                };
+                println!("🔥 Processing CRITICAL {} resource: {}", resource_type_str, resource.original_url);
+                
+                if let Err(e) = Self::download_resource(
+                    client,
+                    file_manager,
+                    &page_html_parser,
+                    &resource.original_url,
+                    download_cache,
+                ).await {
+                    eprintln!("⚠️  Failed to download CRITICAL {} resource {}: {}", resource_type_str, resource.original_url, e);
+                } else {
+                    // Get the local path for this resource and update HTML content
+                    if let Ok(local_path) = page_html_parser.url_to_local_path_string(&resource.original_url) {
+                        html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
+                        println!("🔄 Updated HTML: {} -> {}", resource.original_url, local_path);
+                    }
+                }
+            }
             
-            // Save the modified HTML
+            // Add high priority resources (HTML pages) to queue
+            for resource in &high_resources {
+                if !visited_urls.lock().unwrap().contains(&resource.original_url) {
+                    let mut queue = download_queue.lock().unwrap();
+                    queue.push(DownloadTask {
+                        url: resource.original_url.clone(),
+                        depth: depth + 1,
+                        priority: DownloadPriority::High,
+                        resource_type: Some(resource.resource_type.clone()),
+                    });
+                    println!("⚡ Queued HIGH priority HTML page: {}", resource.original_url);
+                }
+            }
+            
+            // Download normal priority resources (images, etc.) and update HTML content
+            for resource in &normal_resources {
+                let resource_type_str = match resource.resource_type {
+                    ResourceType::Image => "Image",
+                    ResourceType::Other => "Other",
+                    _ => "Normal",
+                };
+                println!("📥 Processing NORMAL {} resource: {}", resource_type_str, resource.original_url);
+                
+                if let Err(e) = Self::download_resource(
+                    client,
+                    file_manager,
+                    &page_html_parser,
+                    &resource.original_url,
+                    download_cache,
+                ).await {
+                    eprintln!("⚠️  Failed to download NORMAL {} resource {}: {}", resource_type_str, resource.original_url, e);
+                } else {
+                    // Get the local path for this resource and update HTML content
+                    if let Ok(local_path) = page_html_parser.url_to_local_path_string(&resource.original_url) {
+                        html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
+                        println!("🔄 Updated HTML: {} -> {}", resource.original_url, local_path);
+                    }
+                }
+            }
+            
+            // Save the updated HTML with local paths for resources
             let local_path = page_html_parser.url_to_local_path_string(url)?;
             println!("💾 Saving HTML to: {}", local_path);
-            let saved_path = file_manager.save_file(&local_path, modified_content, Some(&content_type))?;
-            println!("✅ Saved HTML to: {:?}", saved_path);
+            let saved_path = file_manager.save_file(&local_path, html_content_updated.as_bytes(), Some(&content_type))?;
+            println!("✅ Saved HTML to: {}", saved_path.display());
             
-            // Add new links to the download queue
-            for resource in &resources {
-                if resource.resource_type == ResourceType::Link {
-                    // Only crawl pages from the same domain as the target site
-                    if resource.original_url.contains(base_url) {
-                        let mut queue = download_queue.lock().unwrap();
-                        if !visited_urls.lock().unwrap().contains(&resource.original_url) {
-                            queue.push_back((resource.original_url.clone(), depth + 1));
-                        }
-                    }
-                    // External links are not crawled, just their resources are downloaded
-                }
-            }
+            // Note: Links are now processed in the priority-based resource processing above
+            // This section is no longer needed as links are queued with proper priority
         } else if is_css {
             // Process CSS files to extract background images
             let css_content = String::from_utf8_lossy(&content);
@@ -289,15 +482,17 @@ impl WebsiteMirror {
             let mut background_resources = Vec::new();
             page_html_parser.extract_background_images_from_css(&css_content, &mut background_resources);
             
-            // Download ALL background images to ensure CSS renders properly
+                        // Download background images with normal priority (after CSS/JS)
             for resource in &background_resources {
                 // Always download background images from any site
                 // This ensures the CSS renders without 404 errors
+                println!("📥 Processing NORMAL background image: {}", resource.original_url);
                 if let Err(e) = Self::download_resource(
                     client,
                     file_manager,
                     &page_html_parser,
                     &resource.original_url,
+                    download_cache,
                 ).await {
                     eprintln!("⚠️  Failed to download background image {}: {}", resource.original_url, e);
                 }
@@ -325,22 +520,55 @@ impl WebsiteMirror {
         file_manager: &FileManager,
         html_parser: &HtmlParser,
         url: &str,
+        download_cache: &Arc<Mutex<HashMap<String, String>>>,
     ) -> Result<()> {
-        // Skip if already downloaded
+        // Check if already downloaded using cache
+        {
+            let cache = download_cache.lock().unwrap();
+            if cache.contains_key(url) {
+                let cached_path = cache.get(url).unwrap();
+                println!("⏭️  Skipping {} (already downloaded to {})", url, cached_path);
+                return Ok(());
+            }
+        }
+        
+        // Check if file exists on disk
         if file_manager.file_exists(url) {
+            // Add to cache for future reference
+            let local_path = html_parser.url_to_local_path_string(url)?;
+            let mut cache = download_cache.lock().unwrap();
+            cache.insert(url.to_string(), local_path.clone());
+            println!("⏭️  Skipping {} (already exists on disk)", url);
             return Ok(());
         }
+        
+        // Determine resource type for better logging
+        let resource_type = if url.ends_with(".css") || url.contains("/css/") {
+            "CSS"
+        } else if url.ends_with(".js") || url.contains("/js/") {
+            "JavaScript"
+        } else if url.ends_with(".png") || url.ends_with(".jpg") || url.ends_with(".jpeg") || 
+                  url.ends_with(".gif") || url.ends_with(".webp") || url.ends_with(".svg") {
+            "Image"
+        } else if url.ends_with(".woff") || url.ends_with(".woff2") || url.ends_with(".ttf") || 
+                  url.ends_with(".eot") {
+            "Font"
+        } else {
+            "Resource"
+        };
+        
+        println!("📥 Downloading {}: {}", resource_type, url);
         
         let response = match client.get(url).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                eprintln!("❌ Failed to send request for resource {}: {}", url, e);
+                eprintln!("❌ Failed to send request for {} {}: {}", resource_type, url, e);
                 return Ok(());
             }
         };
         
         if response.status() != StatusCode::OK {
-            eprintln!("⚠️  HTTP {} for resource {}", response.status(), url);
+            eprintln!("⚠️  HTTP {} for {} {}", response.status(), resource_type, url);
             return Ok(());
         }
         
@@ -354,7 +582,7 @@ impl WebsiteMirror {
         let content = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
-                eprintln!("❌ Failed to read resource body {}: {}", url, e);
+                eprintln!("❌ Failed to read {} body {}: {}", resource_type, url, e);
                 return Ok(());
             }
         };
@@ -368,15 +596,21 @@ impl WebsiteMirror {
             }
         };
         
-        let _saved_path = match file_manager.save_file(&local_path, &content, Some(&content_type)) {
+        let saved_path = match file_manager.save_file(&local_path, &content, Some(&content_type)) {
             Ok(path) => path,
             Err(e) => {
-                eprintln!("❌ Failed to save resource {}: {}", url, e);
+                eprintln!("❌ Failed to save {} {}: {}", resource_type, url, e);
                 return Ok(());
             }
         };
         
-        println!("✅ Downloaded: {}", url);
+        // Add to download cache
+        {
+            let mut cache = download_cache.lock().unwrap();
+            cache.insert(url.to_string(), local_path.clone());
+        }
+        
+        println!("✅ Downloaded {} to: {}", resource_type, saved_path.display());
         
         Ok(())
     }

@@ -18,6 +18,8 @@ I've successfully created a comprehensive website mirroring CLI utility in Rust 
 8. **Zero 404 guarantee** - ALL media files (images, CSS, JS) are automatically downloaded from any site to ensure pages render properly offline
 9. **External resource download** - `--download-external` flag for additional external resources
 10. **Full recursive mirroring** - `--full-mirror` flag for comprehensive mirroring with all options enabled
+11. **Smart download cache** - each unique file is downloaded only once, preventing duplicates and improving efficiency
+12. **Enhanced resource logging** - clear visibility into what types of resources are being processed and downloaded
 
 ### 🔧 **Key Components:**
 
@@ -38,6 +40,8 @@ I've successfully created a comprehensive website mirroring CLI utility in Rust 
 - ⚡ **Concurrent Downloads**: Configurable concurrent download limits
 - 📊 **Progress Tracking**: Real-time progress indicators and status updates
 - 🎯 **Depth Control**: Configurable crawling depth limits
+- 💾 **Smart Download Cache**: Prevents duplicate downloads and improves efficiency
+- 🔍 **Enhanced Resource Logging**: Clear visibility into resource types and download status
 
 ## 🎯 **Zero 404 Guarantee**
 
@@ -49,6 +53,38 @@ The utility now ensures that **every mirrored page will render completely offlin
 - **External Resources**: Media files from CDNs, AWS S3, or any other external domain are automatically downloaded
 
 This means you can mirror a site and be confident it will work perfectly offline, even if it uses external resources from multiple domains.
+
+## 🚀 **Smart Download Cache & Enhanced Logging**
+
+### **Download Cache System:**
+The utility implements an intelligent caching system that **prevents duplicate downloads** and significantly improves efficiency:
+
+- **Unique File Tracking**: Each file is downloaded only once, regardless of how many pages reference it
+- **Memory & Disk Cache**: Combines in-memory tracking with disk existence checks
+- **Automatic Deduplication**: Prevents duplicate files in the output directory
+- **Bandwidth Optimization**: Reduces unnecessary network requests
+
+### **Enhanced Resource Logging:**
+Get complete visibility into the mirroring process with detailed logging:
+
+- **Resource Type Detection**: Automatically identifies and categorizes:
+  - 🖼️ **Images**: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`
+  - 🎨 **CSS**: `.css` files and `/css/` paths
+  - ⚡ **JavaScript**: `.js` files and `/js/` paths
+  - 🔤 **Fonts**: `.woff`, `.woff2`, `.ttf`, `.eot`
+  - 📄 **Other resources**: Any other file types
+
+- **Processing Status**: Clear indicators for each stage:
+  - `🔍 Processing [Type] resource:` - Shows what's being analyzed
+  - `📥 Downloading [Type]:` - Shows what's being downloaded
+  - `✅ Downloaded [Type] to:` - Shows where files are saved
+  - `⏭️ Skipping (already downloaded)` - Shows cache efficiency
+
+### **Performance Benefits:**
+- **Faster Mirroring**: Subsequent pages with shared resources process instantly
+- **Reduced Storage**: No duplicate files in the output directory
+- **Network Efficiency**: Minimal bandwidth usage through smart caching
+- **Progress Visibility**: Real-time insight into what's happening during mirroring
 
 ## Installation
 
@@ -88,6 +124,7 @@ cargo install --path .
 ./website-mirror https://example.com --full-mirror
 
 # Note: All media files are automatically downloaded to ensure no 404 errors
+# The utility now includes smart caching to prevent duplicate downloads
 
 # Custom depth and concurrency
 ./website-mirror https://example.com -d 5 -c 20 -o ./my_mirror
@@ -270,6 +307,34 @@ find ./mirrored_site -name "*.css" -o -name "*.js"
 # Check file sizes
 ls -lah ./mirrored_site/_img/* ./mirrored_site/_css/* ./mirrored_site/_js/*
 ```
+
+### **Example Enhanced Logging Output:**
+
+The new logging system provides clear visibility into the mirroring process:
+
+```
+🔍 Processing CSS resource: https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css
+📥 Downloading CSS: https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css
+✅ Downloaded CSS to: ./output/font-awesome/4.3.0/css/font-awesome.min.css
+
+🔍 Processing Image resource: https://s3.amazonaws.com/example.com/image.jpg
+📥 Downloading Image: https://s3.amazonaws.com/example.com/image.jpg
+✅ Downloaded Image to: ./output/s3.amazonaws.com/example.com/image.jpg
+
+🔍 Processing JavaScript resource: https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js
+📥 Downloading JavaScript: https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js
+✅ Downloaded JavaScript to: ./output/ajax/libs/jquery/2.1.1/jquery.min.js
+
+# Subsequent references to the same files show cache efficiency:
+🔍 Processing CSS resource: https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css
+⏭️  Skipping https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css (already downloaded to font-awesome/4.3.0/css/font-awesome.min.css)
+```
+
+This logging makes it easy to:
+- **Track progress** through the mirroring process
+- **Identify resource types** being downloaded
+- **Monitor cache efficiency** and performance
+- **Debug any issues** with specific resources
 
 ## Troubleshooting
 
