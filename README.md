@@ -4,7 +4,6 @@ A powerful CLI utility written in Rust for mirroring websites by downloading sta
 
 ## 🔧 Summary
 
-I've successfully created a comprehensive website mirroring CLI utility in Rust 1.89.0 that addresses all your requirements:
 
 ### ✅ **Features Implemented:**
 
