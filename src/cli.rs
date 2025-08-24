@@ -58,6 +58,10 @@ pub struct MirrorCommand {
             /// Convert JPEG/PNG images to WebP format for better compression
             #[arg(long)]
             pub convert_to_webp: bool,
+            
+            /// Clear the persistent download store (forces re-download of all resources)
+            #[arg(long)]
+            pub clear_store: bool,
 } 
 
 #[cfg(test)]

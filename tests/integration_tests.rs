@@ -14,6 +14,7 @@ fn test_basic_mirror_setup() {
             false,
             false,
             None,
+            false,
             false
         ).unwrap();
     
@@ -94,6 +95,7 @@ fn test_resource_type_filtering() {
         false,
         false,
         None,
+        false,
         false
     ).unwrap();
     
@@ -111,6 +113,7 @@ fn test_resource_type_filtering() {
         false,
         false,
         Some(vec!["images".to_string()]),
+        false,
         false
     ).unwrap();
     
@@ -128,6 +131,7 @@ fn test_resource_type_filtering() {
         false,
         false,
         Some(vec!["css".to_string(), "js".to_string()]),
+        false,
         false
     ).unwrap();
     
@@ -149,7 +153,8 @@ fn test_webp_conversion_flag() {
         false,
         false,
         None,
-        true
+        true,
+        false
     ).unwrap();
     
     assert!(mirror.convert_to_webp);
@@ -167,6 +172,7 @@ fn test_full_mirror_options() {
         true, // ignore_robots
         true, // download_external
         None,
+        false,
         false
     ).unwrap();
     
@@ -314,7 +320,8 @@ fn test_webp_extension_rewriting_integration() {
         false,
         false,
         None,
-        true // Enable WebP conversion
+        true, // Enable WebP conversion
+        false
     ).unwrap();
     
     // Create an HTML parser

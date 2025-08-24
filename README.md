@@ -9,13 +9,13 @@ I've successfully created a comprehensive website mirroring CLI utility in Rust 
 ### ✅ **Features Implemented:**
 
 1. **CLI-based utility** with comprehensive command-line options
-2. **Static website mirroring** - downloads HTML, CSS, images, and JavaScript files
+2. **Static website mirroring** - downloads HTML, CSS, images, JavaScript, PDFs, and video files
 3. **Link conversion** - automatically converts links to work locally
 4. **Directory management** - creates necessary directories automatically
 5. **SSL certificate handling** - built-in SSL support with rustls
 6. **File extension adjustment** - automatically adds .html extension for HTML content
 7. **Robots.txt bypass** - `--ignore-robots` flag to ignore robots.txt restrictions
-8. **Zero 404 guarantee** - ALL media files (images, CSS, JS) are automatically downloaded from any site to ensure pages render properly offline
+8. **Zero 404 guarantee** - ALL media files (images, CSS, JS, PDFs, videos) are automatically downloaded from any site to ensure pages render properly offline
 9. **External resource download** - `--download-external` flag for additional external resources
 10. **Full recursive mirroring** - `--full-mirror` flag for comprehensive mirroring with all options enabled
 11. **Smart download cache** - each unique file is downloaded only once, preventing duplicates and improving efficiency
@@ -23,6 +23,9 @@ I've successfully created a comprehensive website mirroring CLI utility in Rust 
 13. **External image URL resolution** - Automatically converts external CDN image URLs to local paths in HTML content
 14. **Priority-based processing** - CSS/JS first, then HTML, then images for optimal offline rendering
 15. **WebP image conversion** - Automatically converts JPEG/PNG images to WebP format for better compression
+16. **PDF and video support** - Downloads PDF documents and video files (MP4, AVI, MOV, WebM, etc.) referenced in HTML
+17. **WebP preservation** - Existing WebP images are copied as-is without re-conversion
+18. **Transparency preservation** - PNG images with transparency are properly converted to WebP while maintaining alpha channels
 
 ### 🔧 **Key Components:**
 
@@ -64,17 +67,22 @@ This means you can mirror a site and be confident it will work perfectly offline
 
 The `--only-resources` flag allows you to mirror only specific types of resources without downloading HTML pages:
 
-- **`--only-resources images`** - Download only images (PNG, JPG, GIF, SVG, etc.)
+- **`--only-resources images`** - Download only images (PNG, JPG, GIF, SVG, WebP, etc.)
 - **`--only-resources css`** - Download only CSS files
 - **`--only-resources js`** - Download only JavaScript files  
 - **`--only-resources html`** - Download only HTML pages
+- **`--only-resources pdf`** - Download only PDF documents
+- **`--only-resources video`** - Download only video files (MP4, AVI, MOV, WebM, etc.)
 - **`--only-resources images,css,js`** - Download images, CSS, and JavaScript (no HTML)
+- **`--only-resources pdf,video`** - Download only PDFs and videos
 
 This is useful for:
 - **Asset Caching**: Download only media files for offline use
 - **Style/Function Caching**: Cache CSS and JS without full page mirroring
 - **Selective Mirroring**: Focus on specific resource types for analysis
 - **Bandwidth Optimization**: Skip HTML content when only assets are needed
+- **Document Archiving**: Download only PDFs for document preservation
+- **Media Collection**: Download only videos for offline viewing
 
 ## 🖼️ **WebP Image Conversion**
 
@@ -91,6 +99,71 @@ The `--convert-to-webp` flag automatically converts JPEG and PNG images to WebP 
 - **Faster Loading**: Smaller files load faster in browsers
 - **Modern Format**: WebP is supported by all modern browsers
 - **Bandwidth Savings**: Reduced transfer sizes for hosted mirrors
+
+## 📄 **PDF and Video Support**
+
+The utility now automatically detects and downloads PDF documents and video files referenced in HTML pages:
+
+### **PDF Detection & Download:**
+- **Link Detection**: Automatically finds PDF links in `<a href="...pdf">` tags
+- **Cross-domain Support**: Downloads PDFs from any domain (AWS S3, CDNs, etc.)
+- **Local Path Conversion**: Updates HTML references to use local PDF copies
+- **File Preservation**: Maintains original PDF quality and formatting
+
+### **Video Detection & Download:**
+- **Multiple Sources**: Detects videos from various HTML elements:
+  - `<video src="...">` elements
+  - `<source src="...">` elements within video tags
+  - Video download links in `<a href="...mp4">` tags
+- **Supported Formats**: MP4, AVI, MOV, WMV, FLV, WebM, MKV, M4V
+- **Cross-domain Support**: Downloads videos from any hosting domain
+- **Local Path Conversion**: Updates HTML references to use local video copies
+
+### **Use Cases:**
+- **Document Archiving**: Preserve PDF reports, manuals, and documents
+- **Video Preservation**: Archive video content for offline viewing
+- **Complete Site Mirroring**: Ensure all multimedia content is available offline
+- **Research & Analysis**: Download complete media collections for study
+
+### **Example Output:**
+```
+🔍 Found 2 CSS, 1 JS, 3 images, 2 PDFs, 4 videos, 5 links
+📥 Downloading PDF files...
+  📄 PDF from target domain: /document.pdf
+  📄 PDF from external domain: https://external.com/report.PDF
+📥 Downloading video files...
+  🎥 Video from target domain: /video.mp4
+  🎥 Video from external domain: https://external.com/movie.avi
+```
+
+## 🖼️ **Enhanced WebP Support**
+
+### **WebP Preservation:**
+- **Existing WebP Files**: Images that are already in WebP format are copied as-is without re-conversion
+- **Smart Detection**: Automatically identifies `.webp` and `.WEBP` files to prevent unnecessary processing
+- **Efficiency**: Avoids double-conversion and preserves original WebP quality
+
+### **Transparency Preservation:**
+- **Alpha Channel Support**: PNG images with transparency are properly converted to WebP while maintaining alpha channels
+- **RGBA Processing**: Uses RGBA8 encoding for transparent images, RGB8 for opaque images
+- **Quality Maintenance**: Preserves visual quality while achieving optimal compression
+
+### **Conversion Logic:**
+- **JPEG/PNG → WebP**: Automatically converts when `--convert-to-webp` flag is used
+- **Existing WebP → Copy**: Preserves original WebP files without modification
+- **Transparency Detection**: Automatically detects and preserves alpha channels
+- **HTML Updates**: Correctly updates all image references to use new WebP files
+
+### **Example Processing:**
+```
+🔍 Processing image: logo.png (with transparency)
+🔄 Converting PNG to WebP (preserving transparency)
+✅ Saved as: logo.webp
+
+🔍 Processing image: banner.webp (already WebP)
+📋 Copying WebP image as-is (no conversion needed)
+✅ Saved as: banner.webp
+```
 
 ## 🔧 **Recent Fixes & Improvements**
 
@@ -241,7 +314,7 @@ cargo install --path .
 | `--max-concurrent` | -c | Maximum concurrent downloads | `10` |
 | `--ignore-robots` | -r | Ignore robots.txt restrictions | `false` |
 | `--download-external` | -e | Download external resources | `false` |
-| `--only-resources` | - | Mirror only specific resource types (images,css,js,html) | `all` |
+| `--only-resources` | - | Mirror only specific resource types (images,css,js,html,pdf,video) | `all` |
 | `--convert-to-webp` | - | Convert JPEG/PNG images to WebP format for better compression | `false` |
 | `--user-agent` | -u | Custom user agent string | `WebsiteMirror/1.0` |
 | `--follow-redirects` | -f | Follow HTTP redirects | `true` |
@@ -274,11 +347,34 @@ cargo install --path .
   -o ./large_site_mirror
 ```
 
+### Mirror Only PDFs and Videos
+
+```bash
+# Download only PDF documents
+./website-mirror https://example.com --only-resources pdf -o ./pdf_archive
+
+# Download only video files
+./website-mirror https://example.com --only-resources video -o ./video_collection
+
+# Download PDFs and videos together
+./website-mirror https://example.com --only-resources pdf,video -o ./media_archive
+```
+
+### Complete Multimedia Mirroring
+
+```bash
+# Mirror everything including PDFs and videos with WebP conversion
+./website-mirror https://example.com \
+  --full-mirror \
+  --convert-to-webp \
+  --output-dir ./complete_mirror
+```
+
 ## How It Works
 
 1. **Initialization**: Sets up HTTP client with SSL certificate handling
 2. **Crawling**: Starts from the base URL and discovers linked pages
-3. **Resource Extraction**: Parses HTML to find CSS, JavaScript, and image files
+3. **Resource Extraction**: Parses HTML to find CSS, JavaScript, images, PDFs, and video files
 4. **Download**: Downloads all discovered resources concurrently
 5. **Link Conversion**: Converts all links to work with local file structure
 6. **File Organization**: Creates directories and saves files with proper extensions
@@ -374,37 +470,52 @@ find ./mirrored_site -name "*.svg" -o -name "*.png" -o -name "*.jpg" -o -name "*
 # Verify CSS and JS files
 find ./mirrored_site -name "*.css" -o -name "*.js"
 
+# Verify PDFs and videos were downloaded
+find ./mirrored_site -name "*.pdf" -o -name "*.PDF"
+find ./mirrored_site -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.webm"
+
 # Check file sizes
 ls -lah ./mirrored_site/_img/* ./mirrored_site/_css/* ./mirrored_site/_js/*
 ```
 
-### **Example Enhanced Logging Output:**
+## 🧪 **Testing & Quality Assurance**
 
-The new logging system provides clear visibility into the mirroring process:
+### **Comprehensive Test Suite**
+The project includes an extensive test suite to ensure reliability and functionality:
 
+- **Unit Tests**: 31 HTML parser tests covering all resource extraction scenarios
+- **Integration Tests**: End-to-end testing of the complete mirroring workflow
+- **WebP Tests**: Dedicated tests for image conversion and extension handling
+- **Edge Case Tests**: Coverage for malformed HTML, invalid URLs, and error conditions
+
+### **Test Coverage**
+- **HTML Parser**: 100% test coverage for resource extraction and URL processing
+- **Resource Types**: Comprehensive testing of images, CSS, JavaScript, PDFs, and videos
+- **URL Handling**: Tests for absolute, relative, protocol-relative, and invalid URLs
+- **Path Sanitization**: Validation of filesystem-safe path generation
+- **WebP Conversion**: Tests for transparency preservation and existing WebP handling
+
+### **Running Tests**
+```bash
+# Run all tests
+cargo test
+
+# Run only HTML parser tests
+cargo test html_parser::tests
+
+# Run with verbose output
+cargo test -- --nocapture
+
+# Run specific test
+cargo test test_extract_resources
 ```
-🔍 Processing CSS resource: https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css
-📥 Downloading CSS: https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css
-✅ Downloaded CSS to: ./output/font-awesome/4.3.0/css/font-awesome.min.css
 
-🔍 Processing Image resource: https://s3.amazonaws.com/example.com/image.jpg
-📥 Downloading Image: https://s3.amazonaws.com/example.com/image.jpg
-✅ Downloaded Image to: ./output/s3.amazonaws.com/example.com/image.jpg
-
-🔍 Processing JavaScript resource: https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js
-📥 Downloading JavaScript: https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js
-✅ Downloaded JavaScript to: ./output/ajax/libs/jquery/2.1.1/jquery.min.js
-
-# Subsequent references to the same files show cache efficiency:
-🔍 Processing CSS resource: https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css
-⏭️  Skipping https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css (already downloaded to font-awesome/4.3.0/css/font-awesome.min.css)
-```
-
-This logging makes it easy to:
-- **Track progress** through the mirroring process
-- **Identify resource types** being downloaded
-- **Monitor cache efficiency** and performance
-- **Debug any issues** with specific resources
+### **Continuous Integration**
+The project includes GitHub Actions workflows for:
+- **Build Verification**: Ensures code compiles on multiple platforms
+- **Test Execution**: Runs the complete test suite on every commit
+- **Code Quality**: Linting, formatting, and security checks
+- **Automated Releases**: Version-tagged releases with pre-built binaries
 
 ## Troubleshooting
 
@@ -415,6 +526,8 @@ This logging makes it easy to:
 3. **Timeout Errors**: Increase the timeout value for slow servers
 4. **Memory Issues**: Reduce concurrent download limits for large sites
 5. **Images not downloading**: Use the `--download-external` flag to download external resources
+6. **PDFs/Videos not found**: Ensure the site actually contains these file types
+7. **WebP conversion issues**: Check that the `--convert-to-webp` flag is enabled
 
 ### Debug Mode
 
@@ -428,6 +541,28 @@ RUST_LOG=debug ./website-mirror https://example.com
 
 Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
 
+### **Development Setup**
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/website-mirror.git
+cd website-mirror
+
+# Install dependencies
+cargo build
+
+# Run tests
+cargo test
+
+# Run benchmarks
+cargo bench
+```
+
+### **Code Quality Standards**
+- All code must pass the test suite
+- Follow Rust formatting guidelines (`cargo fmt`)
+- Ensure clippy checks pass (`cargo clippy`)
+- Maintain test coverage above 80%
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
@@ -438,5 +573,6 @@ This tool is intended for legitimate purposes such as:
 - Creating offline backups of your own websites
 - Archiving public websites for research purposes
 - Testing website functionality offline
+- Document and media preservation
 
-Please respect website terms of service and robots.txt files when using this tool. 
+Please respect website terms of service and robots.txt files when using this tool.

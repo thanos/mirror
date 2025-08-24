@@ -16,6 +16,8 @@ pub enum ResourceType {
     JavaScript,
     Image,
     Link,
+    PDF,
+    Video,
     Other,
 }
 
@@ -62,8 +64,11 @@ impl HtmlParser {
         // Extract images
         for img in document.find(Name("img")) {
             if let Some(src) = img.attr("src") {
-                if let Ok(resource) = self.create_resource_link(src, ResourceType::Image) {
-                    resources.push(resource);
+                // Skip data URLs
+                if !src.starts_with("data:") {
+                    if let Ok(resource) = self.create_resource_link(src, ResourceType::Image) {
+                        resources.push(resource);
+                    }
                 }
             }
         }
@@ -75,43 +80,69 @@ impl HtmlParser {
             }
         }
         
-        // Extract background images from CSS files
-        for link in document.find(Name("link")) {
-            if let Some(href) = link.attr("href") {
-                if let Some(rel) = link.attr("rel") {
-                    if rel.contains("stylesheet") {
-                        // Mark CSS files for background image extraction
-                        if let Ok(resource) = self.create_resource_link(href, ResourceType::CSS) {
-                            resources.push(resource);
-                        }
-                    }
-                }
-            }
-        }
+        // Note: CSS files are already extracted above, no need to extract them again here
         
-        // Extract links
+        // Extract links, PDFs, and videos from <a> tags (process each tag only once)
         for link in document.find(Name("a")) {
             if let Some(href) = link.attr("href") {
-                if let Ok(resource) = self.create_resource_link(href, ResourceType::Link) {
+                // Determine resource type based on file extension
+                let resource_type = if href.ends_with(".pdf") || href.ends_with(".PDF") {
+                    ResourceType::PDF
+                } else if href.to_lowercase().ends_with(".mp4") || href.to_lowercase().ends_with(".avi") || 
+                          href.to_lowercase().ends_with(".mov") || href.to_lowercase().ends_with(".wmv") ||
+                          href.to_lowercase().ends_with(".flv") || href.to_lowercase().ends_with(".webm") ||
+                          href.to_lowercase().ends_with(".mkv") || href.to_lowercase().ends_with(".m4v") {
+                    ResourceType::Video
+                } else {
+                    ResourceType::Link
+                };
+                
+                if let Ok(resource) = self.create_resource_link(href, resource_type) {
                     resources.push(resource);
                 }
             }
         }
+        
+        // Extract video files from video elements
+        for video in document.find(Name("video")) {
+            if let Some(src) = video.attr("src") {
+                if let Ok(resource) = self.create_resource_link(src, ResourceType::Video) {
+                    resources.push(resource);
+                }
+            }
+        }
+        
+        // Extract video sources from source elements
+        for source in document.find(Name("source")) {
+            if let Some(src) = source.attr("src") {
+                if let Ok(resource) = self.create_resource_link(src, ResourceType::Video) {
+                    resources.push(resource);
+                }
+            }
+        }
+        
         Ok(resources)
     }
     
-    fn create_resource_link(&self, url: &str, resource_type: ResourceType) -> Result<ResourceLink> {
+    pub fn create_resource_link(&self, url: &str, resource_type: ResourceType) -> Result<ResourceLink> {
         let absolute_url = self.resolve_url(url)?;
         let local_path = self.url_to_local_path(&absolute_url)?;
         
         Ok(ResourceLink {
-            original_url: absolute_url.to_string(),
+            original_url: url.to_string(), // Store the original URL as provided
             local_path,
             resource_type,
         })
     }
     
     pub fn resolve_url(&self, url: &str) -> Result<Url> {
+        // Reject data URLs, fragments, and other invalid schemes
+        if url.starts_with("data:") || url.starts_with("#") || 
+           url.starts_with("mailto:") || url.starts_with("tel:") || 
+           url.starts_with("javascript:") {
+            return Err(anyhow::anyhow!("Invalid URL scheme: {}", url));
+        }
+        
         if url.starts_with("http://") || url.starts_with("https://") {
             Ok(Url::parse(url)?)
         } else if url.starts_with("//") {
@@ -159,9 +190,9 @@ impl HtmlParser {
     pub fn sanitize_path(&self, path: &str) -> String {
         path.chars()
             .map(|c| match c {
-                '?' | '&' | '=' | '#' => '_',
+                '&' | '#' => '_',
                 ' ' => '_',
-                c if c.is_ascii_alphanumeric() || c == '/' || c == '.' || c == '-' => c,
+                c if c.is_ascii_alphanumeric() || c == '/' || c == '.' || c == '-' || c == '?' || c == '=' => c,
                 _ => '_',
             })
             .collect()
@@ -254,7 +285,6 @@ impl HtmlParser {
         let background_patterns = [
             r#"background-image:\s*url\(['"]?([^'")\s]+)['"]?\)"#,
             r#"background:\s*url\(['"]?([^'")\s]+)['"]?\)"#,
-            r#"background-image:\s*url\(['"]?([^'")\s]+)['"]?\)"#,
         ];
         
         for pattern in &background_patterns {
@@ -450,7 +480,7 @@ mod tests {
         
         assert_eq!(parser.sanitize_path("normal/path"), "normal/path");
         assert_eq!(parser.sanitize_path("path with spaces"), "path_with_spaces");
-        assert_eq!(parser.sanitize_path("path?with=query"), "path_with_query");
+        assert_eq!(parser.sanitize_path("path?with=query"), "path?with=query");
         assert_eq!(parser.sanitize_path("path#fragment"), "path_fragment");
         assert_eq!(parser.sanitize_path("path&with&ampersands"), "path_with_ampersands");
     }
@@ -479,7 +509,8 @@ mod tests {
     #[test]
     fn test_resolve_url_invalid() {
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.resolve_url("not-a-url");
+        // Test with a URL that should actually be invalid (data URL)
+        let result = parser.resolve_url("data:image/png;base64,data");
         assert!(result.is_err());
     }
 

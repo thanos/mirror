@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::cmp::Ordering;
-use regex::Regex;
+
+use std::fs;
+use serde::{Serialize, Deserialize};
 
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
@@ -68,6 +70,55 @@ impl PartialOrd for DownloadTask {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PersistentStore {
+    pub downloads: HashMap<String, String>, // URL -> local path mapping
+    pub last_updated: std::time::SystemTime,
+}
+
+impl PersistentStore {
+    pub fn new() -> Self {
+        Self {
+            downloads: HashMap::new(),
+            last_updated: std::time::SystemTime::now(),
+        }
+    }
+    
+    pub fn load(store_path: &Path) -> Result<Self> {
+        if store_path.exists() {
+            let content = fs::read_to_string(store_path)?;
+            let store: PersistentStore = serde_json::from_str(&content)?;
+            Ok(store)
+        } else {
+            Ok(Self::new())
+        }
+    }
+    
+    pub fn save(&self, store_path: &Path) -> Result<()> {
+        let content = serde_json::to_string_pretty(self)?;
+        fs::write(store_path, content)?;
+        Ok(())
+    }
+    
+    pub fn clear(&mut self) {
+        self.downloads.clear();
+        self.last_updated = std::time::SystemTime::now();
+    }
+    
+    pub fn add_download(&mut self, url: String, local_path: String) {
+        self.downloads.insert(url, local_path);
+        self.last_updated = std::time::SystemTime::now();
+    }
+    
+    pub fn has_download(&self, url: &str) -> bool {
+        self.downloads.contains_key(url)
+    }
+    
+    pub fn get_local_path(&self, url: &str) -> Option<&String> {
+        self.downloads.get(url)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WebsiteMirror {
     pub base_url: String,
@@ -84,7 +135,7 @@ pub struct WebsiteMirror {
     visited_urls: Arc<Mutex<HashSet<String>>>,
     download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
     semaphore: Arc<Semaphore>,
-    download_cache: Arc<Mutex<HashMap<String, String>>>, // URL -> local path mapping
+    persistent_store: Arc<Mutex<PersistentStore>>,
 }
 
 impl WebsiteMirror {
@@ -108,8 +159,12 @@ impl WebsiteMirror {
         let local_path = html_parser.url_to_local_path_string(original_url)?;
         
         // Convert image extensions to WebP for JPEG/PNG files if the flag is enabled
-        let final_local_path = if convert_to_webp && (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png") ||
-                                                    original_url.ends_with(".JPG") || original_url.ends_with(".JPEG") || original_url.ends_with(".PNG")) {
+        // Skip conversion if the image is already WebP
+        let final_local_path = if convert_to_webp && 
+            (original_url.ends_with(".jpg") || original_url.ends_with(".jpeg") || original_url.ends_with(".png") ||
+             original_url.ends_with(".JPG") || original_url.ends_with(".JPEG") || original_url.ends_with(".PNG")) &&
+            !(original_url.ends_with(".webp") || original_url.ends_with(".WEBP")) {
+            // Convert extension to .webp (only for JPEG/PNG, not already WebP)
             local_path.replace(".jpg", ".webp")
                      .replace(".jpeg", ".webp")
                      .replace(".png", ".webp")
@@ -117,6 +172,7 @@ impl WebsiteMirror {
                      .replace(".JPEG", ".webp")
                      .replace(".PNG", ".webp")
         } else {
+            // Keep original path (including existing WebP images)
             local_path
         };
         
@@ -143,17 +199,19 @@ impl WebsiteMirror {
     }
 
     /// Perform comprehensive WebP extension replacement for any remaining image references
+    /// Only converts JPEG/PNG to WebP, leaves existing WebP files unchanged
     pub fn perform_comprehensive_webp_replacement(html_content: &str) -> String {
         let mut updated_content = html_content.to_string();
         
-        // First, do simple string replacements for all image extensions
+        // First, do simple string replacements for JPEG/PNG extensions only
         // This catches most cases including those in JavaScript, CSS, and HTML
         // Use a two-pass approach to avoid double-converting already .webp files
         
         // Pass 1: Mark already-converted .webp files with a temporary marker
         updated_content = updated_content.replace(".webp", "___WEBP_MARKER___");
+        updated_content = updated_content.replace(".WEBP", "___WEBP_MARKER_UPPER___");
         
-        // Pass 2: Convert remaining image extensions to .webp
+        // Pass 2: Convert JPEG/PNG extensions to .webp (but not existing WebP)
         let simple_replacements = vec![
             (".jpg", ".webp"),
             (".jpeg", ".webp"),
@@ -174,17 +232,18 @@ impl WebsiteMirror {
             }
         }
         
-        // Pass 3: Restore the original .webp files
+        // Pass 3: Restore the original .webp files (keep them unchanged)
         updated_content = updated_content.replace("___WEBP_MARKER___", ".webp");
+        updated_content = updated_content.replace("___WEBP_MARKER_UPPER___", ".WEBP");
         
         // Then use regex patterns for more specific cases that might have been missed
-        // These patterns will now work correctly since we've already handled the double-conversion issue
+        // Only target JPEG/PNG, not existing WebP files
         let patterns = vec![
-            // URLs in quotes that might have been missed
+            // URLs in quotes that might have been missed (only JPEG/PNG)
             (r#"url\(["']?([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']?\)"#, r#"url($1.webp)"#),
-            // Src attributes that might have been missed
+            // Src attributes that might have been missed (only JPEG/PNG)
             (r#"src=["']([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']"#, r#"src="$1.webp""#),
-            // Background image URLs that might have been missed
+            // Background image URLs that might have been missed (only JPEG/PNG)
             (r#"background-image:\s*url\(["']?([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']?\)"#, r#"background-image: url($1.webp)"#),
         ];
         
@@ -219,23 +278,55 @@ impl WebsiteMirror {
             }
         };
         
-        // Convert to RGB8 if needed (WebP encoder expects RGB)
-        let rgb_img = img.to_rgb8();
+        // Check if image has transparency (alpha channel)
+        let has_transparency = img.color().has_alpha();
         
-        // Create WebP encoder with good quality (80/100)
-        let encoder = Encoder::from_rgb(&rgb_img, rgb_img.width(), rgb_img.height());
-        
-        // Encode with quality 80 (good balance between size and quality)
-        let webp_data = encoder.encode(80.0);
+        let webp_data = if has_transparency {
+            // Convert to RGBA8 to preserve transparency
+            let rgba_img = img.to_rgba8();
+            
+            // Create WebP encoder with RGBA (preserves transparency)
+            let encoder = Encoder::from_rgba(&rgba_img, rgba_img.width(), rgba_img.height());
+            
+            // Encode with quality 80 (good balance between size and quality)
+            encoder.encode(80.0)
+        } else {
+            // Convert to RGB8 for images without transparency
+            let rgb_img = img.to_rgb8();
+            
+            // Create WebP encoder with RGB
+            let encoder = Encoder::from_rgb(&rgb_img, rgb_img.width(), rgb_img.height());
+            
+            // Encode with quality 80
+            encoder.encode(80.0)
+        };
         
         let original_size = image_data.len();
         let webp_size = webp_data.len();
         let compression_ratio = (original_size as f64 / webp_size as f64 * 100.0) as u32;
         
-        println!("🔄 Converted {} to WebP: {} -> {} bytes ({}% of original size)", 
-                 original_url, original_size, webp_size, compression_ratio);
+        let transparency_info = if has_transparency { "with transparency" } else { "without transparency" };
+        println!("🔄 Converted {} to WebP {}: {} -> {} bytes ({}% of original size)", 
+                 original_url, transparency_info, original_size, webp_size, compression_ratio);
         
         Ok(webp_data.to_vec())
+    }
+
+    /// Check if a URL belongs to the same domain as the target site
+    fn is_same_domain(&self, url: &str) -> bool {
+        // Parse the URL to extract the domain
+        if let Ok(parsed_url) = url::Url::parse(url) {
+            if let Some(host) = parsed_url.host_str() {
+                // Check if the host matches the base URL domain
+                if let Ok(base_url) = url::Url::parse(&self.base_url) {
+                    if let Some(base_host) = base_url.host_str() {
+                        // Check for exact match or subdomain
+                        return host == base_host || host.ends_with(&format!(".{}", base_host));
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Check if a resource type should be processed based on the only_resources filter
@@ -246,6 +337,8 @@ impl WebsiteMirror {
                 ResourceType::CSS => "css",
                 ResourceType::JavaScript => "js",
                 ResourceType::Link => "html",
+                ResourceType::PDF => "pdf",
+                ResourceType::Video => "video",
                 ResourceType::Other => "other",
             };
             only_resources.iter().any(|r| r.to_lowercase() == type_str)
@@ -253,6 +346,171 @@ impl WebsiteMirror {
             // If no filter specified, process all resource types
             true
         }
+    }
+
+    /// Check if a resource should be downloaded based on domain and resource type
+    fn should_download_resource(&self, url: &str, resource_type: &ResourceType) -> bool {
+        match resource_type {
+            // Always download CSS, JS, images, PDFs, and videos from any domain (they're needed for page rendering)
+            ResourceType::CSS | ResourceType::JavaScript | ResourceType::Image | ResourceType::PDF | ResourceType::Video => true,
+            
+            // Only download HTML pages from the target domain
+            ResourceType::Link => self.is_same_domain(url),
+            
+            // Download other resources from any domain
+            ResourceType::Other => true,
+        }
+    }
+
+    /// Rewrite external resources in HTML content that might have been missed during initial parsing
+    fn rewrite_external_resources_in_html(&self, html_content: &str, html_parser: &HtmlParser) -> Result<String> {
+        let mut updated_html = html_content.to_string();
+        
+        // Find all image, PDF, and video URLs in the HTML (including those in links, inline styles, etc.)
+        let resource_url_patterns = vec![
+            // Links to images (like poster downloads)
+            (r#"href=["']([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']"#, "href"),
+            // Src attributes for images
+            (r#"src=["']([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']"#, "src"),
+            // Background images in inline styles
+            (r#"background-image:\s*url\(["']?([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']?\)"#, "background-image"),
+            // Data attributes that might contain image URLs
+            (r#"data-[^=]*=["']([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']"#, "data-attribute"),
+            // Links to PDFs
+            (r#"href=["']([^"']*\.(?:pdf|PDF))["']"#, "href"),
+            // Links to videos
+            (r#"href=["']([^"']*\.(?:mp4|avi|mov|wmv|flv|webm|mkv|m4v|MP4|AVI|MOV|WMV|FLV|WEBM|MKV|M4V))["']"#, "href"),
+            // Video src attributes
+            (r#"src=["']([^"']*\.(?:mp4|avi|mov|wmv|flv|webm|mkv|m4v|MP4|AVI|MOV|WMV|FLV|WEBM|MKV|M4V))["']"#, "src"),
+        ];
+        
+        for (pattern, attribute_type) in resource_url_patterns {
+            let regex = regex::Regex::new(pattern).unwrap();
+            
+            // Collect all replacements to avoid borrow checker issues
+            let mut replacements = Vec::new();
+            
+            for captures in regex.captures_iter(&updated_html) {
+                if let Some(image_url) = captures.get(1) {
+                    let image_url_str = image_url.as_str();
+                    
+                    // Skip data URLs and relative URLs
+                    if image_url_str.starts_with("data:") || image_url_str.starts_with("#") {
+                        continue;
+                    }
+                    
+                    // Try to get the local path for this image
+                    if let Ok(local_path) = WebsiteMirror::get_local_path_for_resource_static(
+                        html_parser, 
+                        image_url_str, 
+                        self.convert_to_webp, 
+                        ""
+                    ) {
+                                                    // Replace the external URL with the local path
+                            let old_url = image_url.as_str();
+                            let new_url = if self.convert_to_webp && self.is_resource_url(old_url) && 
+                                (old_url.ends_with(".jpg") || old_url.ends_with(".jpeg") || old_url.ends_with(".png") ||
+                                 old_url.ends_with(".JPG") || old_url.ends_with(".JPEG") || old_url.ends_with(".PNG")) {
+                                // If converting to WebP, ensure the local path has .webp extension (only for JPEG/PNG)
+                                self.ensure_webp_extension(&local_path)
+                            } else {
+                                local_path
+                            };
+                        
+                        replacements.push((old_url.to_string(), new_url));
+                    }
+                }
+            }
+            
+            // Apply all replacements
+            for (old_url, new_url) in replacements {
+                println!("🔗 Rewriting {}: {} -> {}", attribute_type, old_url, new_url);
+                updated_html = updated_html.replace(&old_url, &new_url);
+            }
+        }
+        
+        Ok(updated_html)
+    }
+
+    /// Check if a URL is an image, PDF, or video URL
+    fn is_resource_url(&self, url: &str) -> bool {
+        let resource_extensions = [
+            ".jpg", ".jpeg", ".png", ".gif", ".webp", ".JPG", ".JPEG", ".PNG", ".GIF", ".WEBP",
+            ".pdf", ".PDF",
+            ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".mkv", ".m4v",
+            ".MP4", ".AVI", ".MOV", ".WMV", ".FLV", ".WEBM", ".MKV", ".M4V"
+        ];
+        resource_extensions.iter().any(|ext| url.ends_with(ext))
+    }
+
+    /// Ensure a local path has .webp extension if converting to WebP
+    fn ensure_webp_extension(&self, local_path: &str) -> String {
+        if !self.convert_to_webp {
+            return local_path.to_string();
+        }
+        
+        let image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".JPG", ".JPEG", ".PNG", ".GIF"];
+        let mut result = local_path.to_string();
+        
+        for ext in &image_extensions {
+            if result.ends_with(ext) {
+                result = result.replace(ext, ".webp");
+                break;
+            }
+        }
+        
+        result
+    }
+
+    /// Extract additional image, PDF, and video URLs from HTML content that might be in links or inline content
+    fn extract_additional_image_urls(&self, html_content: &str) -> Vec<String> {
+        let mut additional_urls = Vec::new();
+        
+        // Patterns to find image, PDF, and video URLs in various HTML contexts
+        let patterns = vec![
+            // Links to images (like poster downloads)
+            r#"href=["']([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']"#,
+            // Src attributes for images
+            r#"src=["']([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']"#,
+            // Background images in inline styles
+            r#"background-image:\s*url\(["']?([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']?\)"#,
+            // Data attributes that might contain image URLs
+            r#"data-[^=]*=["']([^"']*\.(?:jpg|jpeg|png|gif|webp|JPG|JPEG|PNG|GIF|WEBP))["']"#,
+            // Links to PDFs
+            r#"href=["']([^"']*\.(?:pdf|PDF))["']"#,
+            // Links to videos
+            r#"href=["']([^"']*\.(?:mp4|avi|mov|wmv|flv|webm|mkv|m4v|MP4|AVI|MOV|WMV|FLV|WEBM|MKV|M4V))["']"#,
+            // Video src attributes
+            r#"src=["']([^"']*\.(?:mp4|avi|mov|wmv|flv|webm|mkv|m4v|MP4|AVI|MOV|WMV|FLV|WEBM|MKV|M4V))["']"#,
+        ];
+        
+        for pattern in patterns {
+            if let Ok(regex) = regex::Regex::new(pattern) {
+                for captures in regex.captures_iter(html_content) {
+                    if let Some(url) = captures.get(1) {
+                        let url_str = url.as_str();
+                        
+                        // Skip data URLs, relative URLs, and already processed URLs
+                        if url_str.starts_with("data:") || 
+                           url_str.starts_with("#") || 
+                           url_str.starts_with("/") {
+                            continue;
+                        }
+                        
+                        // Only add if it's an external URL (not from target domain)
+                        if !self.is_same_domain(url_str) {
+                            additional_urls.push(url_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Remove duplicates
+        additional_urls.sort();
+        additional_urls.dedup();
+        
+        additional_urls
     }
 
     pub fn new(
@@ -264,10 +522,29 @@ impl WebsiteMirror {
         download_external: bool,
         only_resources: Option<Vec<String>>,
         convert_to_webp: bool,
+        clear_store: bool,
     ) -> Result<Self> {
         let client = Self::build_http_client()?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
+        
+        // Initialize persistent store
+        let store_path = output_dir.join(".download_store.json");
+        let persistent_store = if clear_store {
+            println!("🗑️  Clearing persistent download store");
+            PersistentStore::new()
+        } else {
+            match PersistentStore::load(&store_path) {
+                Ok(store) => {
+                    println!("📦 Loaded persistent download store with {} entries", store.downloads.len());
+                    store
+                }
+                Err(_) => {
+                    println!("📦 Creating new persistent download store");
+                    PersistentStore::new()
+                }
+            }
+        };
         
         Ok(Self {
             base_url: base_url.to_string(),
@@ -284,7 +561,7 @@ impl WebsiteMirror {
             visited_urls: Arc::new(Mutex::new(HashSet::new())),
             download_queue: Arc::new(Mutex::new(BinaryHeap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            download_cache: Arc::new(Mutex::new(HashMap::new())),
+            persistent_store: Arc::new(Mutex::new(persistent_store)),
         })
     }
     
@@ -305,486 +582,307 @@ impl WebsiteMirror {
         println!("🔗 Max depth: {}", self.max_depth);
         println!("⚡ Max concurrent downloads: {}", self.max_concurrent);
         
-        // Add the base URL to the download queue with high priority (HTML page)
-        // Only add HTML pages if we're not filtering to specific resource types
+        // Extract and display target domain
+        if let Ok(base_url) = url::Url::parse(&self.base_url) {
+            if let Some(host) = base_url.host_str() {
+                println!("🎯 Target domain: {} (will mirror HTML pages from this domain only)", host.blue());
+                println!("📦 External resources (CSS, JS, images) will be downloaded from any domain");
+            }
+        }
+        
+        // Process the base URL first
         if self.only_resources.is_none() || self.should_process_resource_type(&ResourceType::Link) {
-            let mut queue = self.download_queue.lock().unwrap();
-            queue.push(DownloadTask {
-                url: self.base_url.clone(),
-                depth: 0,
-                priority: DownloadPriority::High,
-                resource_type: None,
-            });
+            println!("🌐 Processing URL: {}", self.base_url);
+            
+            if let Err(e) = self.process_page(&self.base_url, 0).await {
+                eprintln!("❌ Error processing base URL {}: {}", self.base_url, e);
+                return Err(e);
+            }
+            
+            println!("✅ PAGE DONE URL: {}", self.base_url);
         } else {
             println!("🔍 Resource filter active: skipping HTML page crawling");
         }
         
-        let progress_bar = ProgressBar::new_spinner();
-        progress_bar.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner} {msg}")
-                .unwrap()
-        );
-        
-        // Process the download queue
-        loop {
-            let download_task = {
-                let mut queue = self.download_queue.lock().unwrap();
-                queue.pop()
-            };
-            
-            if let Some(task) = download_task {
-                let url = task.url.clone();
-                let depth = task.depth;
-                let priority = task.priority.clone();
-                let resource_type = task.resource_type.clone();
-                // Check depth limit (0 means unlimited)
-                if self.max_depth > 0 && depth > self.max_depth {
-                    continue;
-                }
-                
-                let client = self.client.clone();
-                let file_manager = self.file_manager.clone();
-                let html_parser = self.html_parser.clone();
-                let visited_urls = self.visited_urls.clone();
-                let download_queue = self.download_queue.clone();
-                let download_cache = self.download_cache.clone();
-                
-                progress_bar.set_message(format!("Downloading: {}", url));
-                
-                let base_url = self.base_url.clone();
-                let download_external = self.download_external;
-                
-                // Process the download directly instead of spawning a task
-                println!("🚀 Processing download for: {}", url);
-                                        if let Err(e) = Self::download_and_process_url(
-                            &client,
-                            &file_manager,
-                            &html_parser,
-                            &url,
-                            depth,
-                            &visited_urls,
-                            &download_queue,
-                            &download_cache,
-                            download_external,
-                            &base_url,
-                            priority,
-                            resource_type,
-                            &self.only_resources,
-                            self.convert_to_webp,
-                        ).await {
-                    eprintln!("❌ Error downloading {}: {}", url, e);
-                }
-                println!("🏁 Download completed for: {}", url);
-            } else {
-                // Check if all downloads are complete
-                let queue_size = self.download_queue.lock().unwrap().len();
-                
-                if queue_size == 0 {
-                    // Wait a bit for any ongoing downloads to complete
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    
-                    let final_queue_size = self.download_queue.lock().unwrap().len();
-                    if final_queue_size == 0 {
-                        break;
-                    }
-                }
-                
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Save the persistent store
+        let store_path = self.output_dir.join(".download_store.json");
+        if let Ok(store) = self.persistent_store.lock() {
+            if let Err(e) = store.save(&store_path) {
+                eprintln!("⚠️  Warning: Failed to save persistent store: {}", e);
             }
         }
         
-        progress_bar.finish_with_message("✅ All downloads completed!");
-        
         let visited_count = self.visited_urls.lock().unwrap().len();
-        println!("📊 Total pages downloaded: {}", visited_count);
+        println!("📊 Total pages processed: {}", visited_count);
         
         Ok(())
     }
     
-    async fn download_and_process_url(
-        client: &Client,
-        file_manager: &FileManager,
-        html_parser: &HtmlParser,
-        url: &str,
-        depth: usize,
-        visited_urls: &Arc<Mutex<HashSet<String>>>,
-        download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
-        download_cache: &Arc<Mutex<HashMap<String, String>>>,
-        download_external: bool,
-        base_url: &str,
-        priority: DownloadPriority,
-        resource_type: Option<ResourceType>,
-        only_resources: &Option<Vec<String>>,
-        convert_to_webp: bool,
-    ) -> Result<()> {
+    /// Process a single page with the new flow: download dependencies, convert images, update HTML
+    async fn process_page(&self, url: &str, depth: usize) -> Result<()> {
         // Check if already visited
         {
-            let mut visited = visited_urls.lock().unwrap();
+            let mut visited = self.visited_urls.lock().unwrap();
             if visited.contains(url) {
+                println!("⏭️  Already processed: {}", url);
                 return Ok(());
             }
             visited.insert(url.to_string());
         }
         
-        let priority_str = match priority {
-            DownloadPriority::Critical => "🔥 CRITICAL",
-            DownloadPriority::High => "⚡ HIGH",
-            DownloadPriority::Normal => "📥 NORMAL",
-        };
-        println!("{} Downloading: {} (depth: {})", priority_str, url, depth);
+        // Check depth limit
+        if self.max_depth > 0 && depth > self.max_depth {
+            println!("🔒 Depth limit reached for: {}", url);
+            return Ok(());
+        }
         
-        // Download the URL
-        println!("🌐 Sending request to: {}", url);
-        let response = match client.get(url).send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                eprintln!("❌ Request failed: {}", e);
-                return Ok(());
-            }
-        };
+        println!("📥 Downloading page: {}", url);
         
-        println!("📡 Response status: {}", response.status());
+        // Download the HTML page
+        let client = self.client.clone();
+        let response = client.get(url).send().await?;
         
         if response.status() != StatusCode::OK {
             eprintln!("⚠️  HTTP {} for {}", response.status(), url);
             return Ok(());
         }
         
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("text/html")
-            .to_string();
+        let html_content = response.text().await?;
+        println!("📄 HTML downloaded: {} bytes", html_content.len());
         
-        let content = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                eprintln!("❌ Failed to read response body: {}", e);
-                return Ok(());
-            }
-        };
+        // Parse HTML and extract resources
+        let html_parser = HtmlParser::new(url)?;
+        let resources = html_parser.extract_resources(&html_content)?;
         
-        // Determine content type
-        let is_html = content_type.contains("text/html") || 
-                     content.starts_with(b"<!DOCTYPE") || 
-                     content.starts_with(b"<html");
-        let is_css = content_type.contains("text/css") || url.ends_with(".css");
+                    // Also extract additional resource URLs that might be in links or inline content
+            let additional_resource_urls = self.extract_additional_image_urls(&html_content);
         
-        println!("🔍 Content type: {}, is_html: {}, is_css: {}", content_type, is_html, is_css);
-        println!("🔍 Content preview: {}", String::from_utf8_lossy(&content[..content.len().min(100)]));
-        
-        if is_html {
-            // Parse HTML and extract resources
-            let html_content = String::from_utf8_lossy(&content);
+                    // Separate resources by type and filter based on domain rules
+            let mut css_resources = Vec::new();
+            let mut js_resources = Vec::new();
+            let mut image_resources = Vec::new();
+            let mut pdf_resources = Vec::new();
+            let mut video_resources = Vec::new();
+            let mut link_resources = Vec::new();
+            let mut skipped_resources = Vec::new();
             
-            // Create a new HTML parser with the current page's base URL
-            let page_html_parser = HtmlParser::new(url)?;
-            let resources = page_html_parser.extract_resources(&html_content)?;
-            
-            // Calculate the local path for the current HTML file (needed for relative path calculations)
-            let current_html_path = page_html_parser.url_to_local_path_string(url)?;
-            
-            // Helper function to check if a resource type should be processed
-            let should_process_resource_type = |resource_type: &ResourceType| -> bool {
-                if let Some(ref only_resources) = only_resources {
-                    let type_str = match resource_type {
-                        ResourceType::Image => "images",
-                        ResourceType::CSS => "css",
-                        ResourceType::JavaScript => "js",
-                        ResourceType::Link => "html",
-                        ResourceType::Other => "other",
-                    };
-                    only_resources.iter().any(|r| r.to_lowercase() == type_str)
-                } else {
-                    // If no filter specified, process all resource types
-                    true
-                }
-            };
-            
-            // Process resources in priority order: CSS/JS first, then HTML, then images
-            let mut critical_resources = Vec::new();
-            let mut high_resources = Vec::new();
-            let mut normal_resources = Vec::new();
-            
-            // Categorize resources by priority
+            // Process regular resources
             for resource in &resources {
-                let priority = match resource.resource_type {
-                    ResourceType::CSS | ResourceType::JavaScript => DownloadPriority::Critical,
-                    ResourceType::Link => DownloadPriority::High,
-                    ResourceType::Image | ResourceType::Other => DownloadPriority::Normal,
-                };
-                
-                let should_download = match resource.resource_type {
-                    ResourceType::Image | ResourceType::CSS | ResourceType::JavaScript => {
-                        // Always download media files (images, CSS, JS) from any site
-                        // But respect the only_resources filter
-                        should_process_resource_type(&resource.resource_type)
-                    },
-                    ResourceType::Link => {
-                        // Only download HTML pages from the target site
-                        // And respect the only_resources filter
-                        resource.original_url.contains(base_url) && should_process_resource_type(&resource.resource_type)
-                    },
-                    ResourceType::Other => {
-                        // Download other resources only from target site
-                        // And respect the only_resources filter
-                        resource.original_url.contains(base_url) && should_process_resource_type(&resource.resource_type)
-                    }
-                };
-                
-                if should_download {
-                    match priority {
-                        DownloadPriority::Critical => critical_resources.push(resource.clone()),
-                        DownloadPriority::High => high_resources.push(resource.clone()),
-                        DownloadPriority::Normal => normal_resources.push(resource.clone()),
-                    }
-                } else if !resource.original_url.contains(base_url) {
-                    // Log when we skip external HTML pages
+                if self.should_download_resource(&resource.original_url, &resource.resource_type) {
                     match resource.resource_type {
-                        ResourceType::Link => println!("⏭️  Skipping external page: {} (but will download its media)", resource.original_url),
+                        ResourceType::CSS => css_resources.push(resource.clone()),
+                        ResourceType::JavaScript => js_resources.push(resource.clone()),
+                        ResourceType::Image => image_resources.push(resource.clone()),
+                        ResourceType::PDF => pdf_resources.push(resource.clone()),
+                        ResourceType::Video => video_resources.push(resource.clone()),
+                        ResourceType::Link => link_resources.push(resource.clone()),
                         _ => {}
                     }
-                } else if !should_process_resource_type(&resource.resource_type) {
-                    // Log when we skip resources due to filter
-                    let resource_type_str = match resource.resource_type {
-                        ResourceType::Image => "Image",
-                        ResourceType::CSS => "CSS",
-                        ResourceType::JavaScript => "JavaScript",
-                        ResourceType::Link => "Link",
-                        ResourceType::Other => "Other",
-                    };
-                    println!("🔍 Skipping {} due to resource filter: {}", resource_type_str, resource.original_url);
-                }
-            }
-            
-            // Download critical resources first (CSS/JS) and collect local paths for HTML rewriting
-            let mut html_content_updated = html_content.to_string();
-            for resource in &critical_resources {
-                let resource_type_str = match resource.resource_type {
-                    ResourceType::CSS => "CSS",
-                    ResourceType::JavaScript => "JavaScript",
-                    _ => "Critical",
-                };
-                println!("🔥 Processing CRITICAL {} resource: {}", resource_type_str, resource.original_url);
-                
-                if let Err(e) = Self::download_resource(
-                    client,
-                    file_manager,
-                    &page_html_parser,
-                    &resource.original_url,
-                    download_cache,
-                    convert_to_webp,
-                ).await {
-                    eprintln!("⚠️  Failed to download CRITICAL {} resource {}: {}", resource_type_str, resource.original_url, e);
                 } else {
-                    // Get the local path for this resource and update HTML content
-                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp, &current_html_path) {
-                        let before_count = html_content_updated.matches(&resource.original_url).count();
-                        html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
-                        let after_count = html_content_updated.matches(&local_path).count();
-                        println!("🔄 Updated HTML: {} -> {} ({} replacements)", resource.original_url, local_path, after_count);
-                        
-                        // Debug: Check if the replacement actually worked
-                        if before_count > 0 && after_count == 0 {
-                            eprintln!("⚠️  Warning: URL replacement may have failed for: {}", resource.original_url);
-                        }
-                        
-                        // If this is a WebP conversion, also update any remaining references to the old extension
-                        if convert_to_webp && (resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".png") ||
-                                             resource.original_url.ends_with(".JPG") || resource.original_url.ends_with(".JPEG") || resource.original_url.ends_with(".PNG")) {
-                            let old_extension = if resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".JPG") {
-                                if resource.original_url.ends_with(".jpg") { ".jpg" } else { ".JPG" }
-                            } else if resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".JPEG") {
-                                if resource.original_url.ends_with(".jpeg") { ".jpeg" } else { ".JPEG" }
-                            } else {
-                                if resource.original_url.ends_with(".png") { ".png" } else { ".PNG" }
-                            };
-                            
-                            // Extract just the filename part for extension replacement
-                            if let Some(filename) = resource.original_url.split('/').last() {
-                                let new_filename = filename.replace(old_extension, ".webp");
-                                let old_filename_with_path = resource.original_url.clone();
-                                let new_filename_with_path = resource.original_url.replace(filename, &new_filename);
-                                
-                                // Replace the filename with .webp extension
-                                let before_ext_count = html_content_updated.matches(&old_filename_with_path).count();
-                                html_content_updated = html_content_updated.replace(&old_filename_with_path, &new_filename_with_path);
-                                let after_ext_count = html_content_updated.matches(&new_filename_with_path).count();
-                                
-                                if before_ext_count > 0 {
-                                    println!("🔄 Updated file extension: {} -> {} ({} replacements)", 
-                                             old_filename_with_path, new_filename_with_path, after_ext_count);
-                                }
-                            }
-                        }
-                    }
+                    skipped_resources.push(resource.clone());
                 }
             }
-            
-            // Add high priority resources (HTML pages) to queue
-            for resource in &high_resources {
-                if !visited_urls.lock().unwrap().contains(&resource.original_url) {
-                    let mut queue = download_queue.lock().unwrap();
-                    queue.push(DownloadTask {
-                        url: resource.original_url.clone(),
-                        depth: depth + 1,
-                        priority: DownloadPriority::High,
-                        resource_type: Some(resource.resource_type.clone()),
-                    });
-                    println!("⚡ Queued HIGH priority HTML page: {}", resource.original_url);
-                }
-            }
-            
-            // Download normal priority resources (images, etc.) and update HTML content
-            for resource in &normal_resources {
-                let resource_type_str = match resource.resource_type {
-                    ResourceType::Image => "Image",
-                    ResourceType::Other => "Other",
-                    _ => "Normal",
-                };
-                println!("📥 Processing NORMAL {} resource: {}", resource_type_str, resource.original_url);
-                
-                if let Err(e) = Self::download_resource(
-                    client,
-                    file_manager,
-                    &page_html_parser,
-                    &resource.original_url,
-                    download_cache,
-                    convert_to_webp,
-                ).await {
-                    eprintln!("⚠️  Failed to download NORMAL {} resource {}: {}", resource_type_str, resource.original_url, e);
+        
+                    // Add additional resource URLs found in HTML content
+            for resource_url in &additional_resource_urls {
+                // Determine resource type based on file extension
+                let resource_type = if resource_url.ends_with(".pdf") || resource_url.ends_with(".PDF") {
+                    ResourceType::PDF
+                } else if resource_url.ends_with(".mp4") || resource_url.ends_with(".avi") || 
+                          resource_url.ends_with(".mov") || resource_url.ends_with(".wmv") ||
+                          resource_url.ends_with(".flv") || resource_url.ends_with(".webm") ||
+                          resource_url.ends_with(".mkv") || resource_url.ends_with(".m4v") ||
+                          resource_url.ends_with(".MP4") || resource_url.ends_with(".AVI") || 
+                          resource_url.ends_with(".MOV") || resource_url.ends_with(".WMV") ||
+                          resource_url.ends_with(".FLV") || resource_url.ends_with(".WEBM") ||
+                          resource_url.ends_with(".MKV") || resource_url.ends_with(".M4V") {
+                    ResourceType::Video
                 } else {
-                    // Get the local path for this resource and update HTML content
-                    if let Ok(local_path) = Self::get_local_path_for_resource_static(&page_html_parser, &resource.original_url, convert_to_webp, &current_html_path) {
-                        let before_count = html_content_updated.matches(&resource.original_url).count();
-                        html_content_updated = html_content_updated.replace(&resource.original_url, &local_path);
-                        let after_count = html_content_updated.matches(&local_path).count();
-                        println!("🔄 Updated HTML: {} -> {} ({} replacements)", resource.original_url, local_path, after_count);
-                        
-                        // Debug: Check if the replacement actually worked
-                        if before_count > 0 && after_count == 0 {
-                            eprintln!("⚠️  Warning: URL replacement may have failed for: {}", resource.original_url);
-                        }
-                        
-                        // If this is a WebP conversion, also update any remaining references to the old extension
-                        if convert_to_webp && (resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".png") ||
-                                             resource.original_url.ends_with(".JPG") || resource.original_url.ends_with(".JPEG") || resource.original_url.ends_with(".PNG")) {
-                            let old_extension = if resource.original_url.ends_with(".jpg") || resource.original_url.ends_with(".JPG") {
-                                if resource.original_url.ends_with(".jpg") { ".jpg" } else { ".JPG" }
-                            } else if resource.original_url.ends_with(".jpeg") || resource.original_url.ends_with(".JPEG") {
-                                if resource.original_url.ends_with(".jpeg") { ".jpeg" } else { ".JPEG" }
-                            } else {
-                                if resource.original_url.ends_with(".png") { ".png" } else { ".PNG" }
-                            };
-                            
-                            // Extract just the filename part for extension replacement
-                            if let Some(filename) = resource.original_url.split('/').last() {
-                                let new_filename = filename.replace(old_extension, ".webp");
-                                let old_filename_with_path = resource.original_url.clone();
-                                let new_filename_with_path = resource.original_url.replace(filename, &new_filename);
-                                
-                                // Replace the filename with .webp extension
-                                let before_ext_count = html_content_updated.matches(&old_filename_with_path).count();
-                                html_content_updated = html_content_updated.replace(&old_filename_with_path, &new_filename_with_path);
-                                let after_ext_count = html_content_updated.matches(&new_filename_with_path).count();
-                                
-                                if before_ext_count > 0 {
-                                    println!("🔄 Updated file extension: {} -> {} ({} replacements)", 
-                                             old_filename_with_path, new_filename_with_path, after_ext_count);
-                                }
-                            }
-                        }
+                    ResourceType::Image
+                };
+                
+                // Create a resource link for this resource
+                if let Ok(resource) = html_parser.create_resource_link(resource_url, resource_type.clone()) {
+                    match resource_type {
+                        ResourceType::PDF => pdf_resources.push(resource),
+                        ResourceType::Video => video_resources.push(resource),
+                        ResourceType::Image => image_resources.push(resource),
+                        _ => {}
                     }
+                    println!("🔍 Found additional {} in HTML: {}", 
+                             match resource_type {
+                                 ResourceType::PDF => "PDF",
+                                 ResourceType::Video => "video",
+                                 ResourceType::Image => "image",
+                                 _ => "resource"
+                             }, resource_url);
                 }
             }
-            
-            // Additional comprehensive WebP extension replacement for any remaining image references
-            if convert_to_webp {
-                println!("🔍 Performing comprehensive WebP extension replacement...");
-                html_content_updated = Self::perform_comprehensive_webp_replacement(&html_content_updated);
+        
+                    println!("🔍 Found {} CSS, {} JS, {} images, {} PDFs, {} videos, {} links", 
+                     css_resources.len(), js_resources.len(), image_resources.len(), 
+                     pdf_resources.len(), video_resources.len(), link_resources.len());
+        
+        if !skipped_resources.is_empty() {
+            println!("⏭️  Skipping {} resources (not from target domain or filtered out):", skipped_resources.len());
+            for resource in &skipped_resources {
+                let reason = if resource.resource_type == ResourceType::Link && !self.is_same_domain(&resource.original_url) {
+                    "external HTML page"
+                } else {
+                    "filtered out"
+                };
+                println!("  ⏭️  {:?}: {} ({})", resource.resource_type, resource.original_url, reason);
             }
-            
-            // Debug: Show a preview of the updated HTML content
-            println!("🔍 HTML content preview (first 500 chars):");
-            let preview = html_content_updated.chars().take(500).collect::<String>();
-            println!("{}", preview);
-            
-            // Save the updated HTML with local paths for resources
-            println!("💾 Saving HTML to: {}", current_html_path);
-            let saved_path = file_manager.save_file(&current_html_path, html_content_updated.as_bytes(), Some(&content_type))?;
-            println!("✅ Saved HTML to: {}", saved_path.display());
-            
-            // Note: Links are now processed in the priority-based resource processing above
-            // This section is no longer needed as links are queued with proper priority
-        } else if is_css {
-            // Process CSS files to extract background images
-            let css_content = String::from_utf8_lossy(&content);
-            let page_html_parser = HtmlParser::new(url)?;
-            
-            // Extract background images from CSS
-            let mut background_resources = Vec::new();
-            page_html_parser.extract_background_images_from_css(&css_content, &mut background_resources);
-            
-                        // Download background images with normal priority (after CSS/JS)
-            for resource in &background_resources {
-                // Always download background images from any site
-                // This ensures the CSS renders without 404 errors
-                println!("📥 Processing NORMAL background image: {}", resource.original_url);
-                if let Err(e) = Self::download_resource(
-                    client,
-                    file_manager,
-                    &page_html_parser,
-                    &resource.original_url,
-                    download_cache,
-                    convert_to_webp,
-                ).await {
-                    eprintln!("⚠️  Failed to download background image {}: {}", resource.original_url, e);
-                }
-            }
-            
-            // Save the CSS file
-            let local_path = page_html_parser.url_to_local_path_string(url)?;
-            println!("💾 Saving CSS to: {}", local_path);
-            let saved_path = file_manager.save_file(&local_path, &content, Some(&content_type))?;
-            println!("✅ Saved CSS to: {:?}", saved_path);
-        } else {
-            // Save non-HTML content as-is
-            let local_path = html_parser.url_to_local_path_string(url)?;
-            println!("💾 Saving non-HTML to: {}", local_path);
-            let saved_path = file_manager.save_file(&local_path, &content, Some(&content_type))?;
-            println!("✅ Saved non-HTML to: {:?}", saved_path);
         }
         
-        println!("✅ Downloaded: {}", url);
+        // Download CSS files first (critical for page rendering) - from ANY domain
+        println!("📥 Downloading CSS files...");
+        for resource in &css_resources {
+            let domain_info = if self.is_same_domain(&resource.original_url) { "target domain" } else { "external domain" };
+            println!("  📄 CSS from {}: {}", domain_info, resource.original_url);
+            self.download_resource(&client, &html_parser, &resource.original_url).await?;
+        }
+        
+        // Download JavaScript files - from ANY domain
+        println!("📥 Downloading JavaScript files...");
+        for resource in &js_resources {
+            let domain_info = if self.is_same_domain(&resource.original_url) { "target domain" } else { "external domain" };
+            println!("  📜 JS from {}: {}", domain_info, resource.original_url);
+            self.download_resource(&client, &html_parser, &resource.original_url).await?;
+        }
+        
+        // Download and convert images to WebP - from ANY domain
+        if self.convert_to_webp {
+            println!("🔄 Converting images to WebP...");
+        }
+        
+        let progress_bar = ProgressBar::new(image_resources.len() as u64);
+        progress_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner} [{bar:40.cyan/blue}] {pos}/{len} images {msg}")
+                .unwrap()
+        );
+        
+        for (i, resource) in image_resources.iter().enumerate() {
+            progress_bar.set_position(i as u64);
+            let domain_info = if self.is_same_domain(&resource.original_url) { "target domain" } else { "external domain" };
+            progress_bar.set_message(format!("Converting {} from {}", 
+                resource.original_url.split('/').last().unwrap_or("image"), domain_info));
+            
+            self.download_resource(&client, &html_parser, &resource.original_url).await?;
+        }
+                    progress_bar.finish_with_message("✅ All images processed");
+            
+            // Download PDF files - from ANY domain
+            if !pdf_resources.is_empty() {
+                println!("📥 Downloading PDF files...");
+                for resource in &pdf_resources {
+                    let domain_info = if self.is_same_domain(&resource.original_url) { "target domain" } else { "external domain" };
+                    println!("  📄 PDF from {}: {}", domain_info, resource.original_url);
+                    self.download_resource(&self.client, &html_parser, &resource.original_url).await?;
+                }
+            }
+            
+            // Download video files - from ANY domain
+            if !video_resources.is_empty() {
+                println!("📥 Downloading video files...");
+                for resource in &video_resources {
+                    let domain_info = if self.is_same_domain(&resource.original_url) { "target domain" } else { "external domain" };
+                    println!("  🎥 Video from {}: {}", domain_info, resource.original_url);
+                    self.download_resource(&self.client, &html_parser, &resource.original_url).await?;
+                }
+            }
+            
+            // Update HTML to use local references
+            println!("🔧 Updating HTML references...");
+        let mut updated_html = html_content.clone();
+        
+        // Update CSS references
+        for resource in &css_resources {
+            if let Ok(local_path) = WebsiteMirror::get_local_path_for_resource_static(&html_parser, &resource.original_url, false, "") {
+                updated_html = updated_html.replace(&resource.original_url, &local_path);
+            }
+        }
+        
+        // Update JS references
+        for resource in &js_resources {
+            if let Ok(local_path) = WebsiteMirror::get_local_path_for_resource_static(&html_parser, &resource.original_url, false, "") {
+                updated_html = updated_html.replace(&resource.original_url, &local_path);
+            }
+        }
+        
+                    // Update image references
+            for resource in &image_resources {
+                if let Ok(local_path) = WebsiteMirror::get_local_path_for_resource_static(&html_parser, &resource.original_url, self.convert_to_webp, "") {
+                    updated_html = updated_html.replace(&resource.original_url, &local_path);
+                }
+            }
+            
+            // Update PDF references
+            for resource in &pdf_resources {
+                if let Ok(local_path) = WebsiteMirror::get_local_path_for_resource_static(&html_parser, &resource.original_url, false, "") {
+                    updated_html = updated_html.replace(&resource.original_url, &local_path);
+                }
+            }
+            
+            // Update video references
+            for resource in &video_resources {
+                if let Ok(local_path) = WebsiteMirror::get_local_path_for_resource_static(&html_parser, &resource.original_url, false, "") {
+                    updated_html = updated_html.replace(&resource.original_url, &local_path);
+                }
+            }
+        
+        // Apply comprehensive WebP replacement if enabled
+        if self.convert_to_webp {
+            updated_html = Self::perform_comprehensive_webp_replacement(&updated_html);
+        }
+        
+        // Additional HTML rewriting for external resources that might have been missed
+        // This catches poster links, inline image references, and other external resources
+        updated_html = self.rewrite_external_resources_in_html(&updated_html, &html_parser)?;
+        
+        // Save the updated HTML
+        let local_path = html_parser.url_to_local_path_string(url)?;
+        self.file_manager.save_file(&local_path, updated_html.as_bytes(), Some("text/html"))?;
+        println!("💾 HTML saved: {}", local_path);
+        
+        // Process linked pages recursively - ONLY from the target domain
+        for resource in &link_resources {
+            // Only process HTML pages from the target domain
+            if self.is_same_domain(&resource.original_url) {
+                if let Err(e) = Box::pin(self.process_page(&resource.original_url, depth + 1)).await {
+                    eprintln!("⚠️  Failed to process linked page {}: {}", resource.original_url, e);
+                }
+            } else {
+                println!("⏭️  Skipping external HTML page: {} (not from target domain)", resource.original_url);
+            }
+        }
+        
         Ok(())
     }
     
     async fn download_resource(
+        &self,
         client: &Client,
-        file_manager: &FileManager,
         html_parser: &HtmlParser,
         url: &str,
-        download_cache: &Arc<Mutex<HashMap<String, String>>>,
-        convert_to_webp: bool,
     ) -> Result<()> {
-        // Check if already downloaded using cache
+        // Check if already downloaded using persistent store
         {
-            let cache = download_cache.lock().unwrap();
-            if cache.contains_key(url) {
-                let cached_path = cache.get(url).unwrap();
+            let store = self.persistent_store.lock().unwrap();
+            if store.has_download(url) {
+                let cached_path = store.get_local_path(url).unwrap();
                 println!("⏭️  Skipping {} (already downloaded to {})", url, cached_path);
                 return Ok(());
             }
         }
         
         // Check if file exists on disk
-        if file_manager.file_exists(url) {
-            // Add to cache for future reference
+        if self.file_manager.file_exists(url) {
+            // Add to persistent store for future reference
             let local_path = html_parser.url_to_local_path_string(url)?;
-            let mut cache = download_cache.lock().unwrap();
-            cache.insert(url.to_string(), local_path.clone());
+            let mut store = self.persistent_store.lock().unwrap();
+            store.add_download(url.to_string(), local_path.clone());
             println!("⏭️  Skipping {} (already exists on disk)", url);
             return Ok(());
         }
@@ -844,9 +942,13 @@ impl WebsiteMirror {
         };
         
         // Convert images to WebP if they're JPEG or PNG and the flag is enabled
-        let (final_content, final_content_type, final_local_path) = if convert_to_webp && (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png") ||
-                                                                                        url.ends_with(".JPG") || url.ends_with(".JPEG") || url.ends_with(".PNG")) {
-            // Convert to WebP
+        // Skip conversion if the image is already WebP
+        let (final_content, final_content_type, final_local_path) = if self.convert_to_webp && 
+            (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png") ||
+             url.ends_with(".JPG") || url.ends_with(".JPEG") || url.ends_with(".PNG")) &&
+            !(url.ends_with(".webp") || url.ends_with(".WEBP")) {
+            
+            // Convert to WebP (only for JPEG/PNG, not already WebP images)
             let webp_data = Self::convert_to_webp_static(&content, url)?;
             
             // Change file extension to .webp (handle both lowercase and uppercase)
@@ -859,22 +961,27 @@ impl WebsiteMirror {
             
             (webp_data, "image/webp".to_string(), webp_path)
         } else {
-            // Keep original content and path
+            // Keep original content and path (including existing WebP images)
+            if url.ends_with(".webp") || url.ends_with(".WEBP") {
+                println!("📋 Copying WebP image as-is (no conversion needed): {}", url);
+            }
             (content.to_vec(), content_type, local_path.clone())
         };
         
         // For WebP conversion, we need to save the file with the .webp extension
         // but also ensure the path matches what will be used in HTML rewriting
-        let save_path = if convert_to_webp && (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png") ||
-                                              url.ends_with(".JPG") || url.ends_with(".JPEG") || url.ends_with(".PNG")) {
-            // Use the .webp path for saving
+        let save_path = if self.convert_to_webp && 
+            (url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png") ||
+             url.ends_with(".JPG") || url.ends_with(".JPEG") || url.ends_with(".PNG")) &&
+            !(url.ends_with(".webp") || url.ends_with(".WEBP")) {
+            // Use the .webp path for saving (only for converted images)
             final_local_path.clone()
         } else {
-            // Use the original path for saving
+            // Use the original path for saving (including existing WebP images)
             local_path.clone()
         };
         
-        let saved_path = match file_manager.save_file(&save_path, &final_content, Some(&final_content_type)) {
+        let saved_path = match self.file_manager.save_file(&save_path, &final_content, Some(&final_content_type)) {
             Ok(path) => path,
             Err(e) => {
                 eprintln!("❌ Failed to save {} {}: {}", resource_type, url, e);
@@ -882,10 +989,10 @@ impl WebsiteMirror {
             }
         };
         
-        // Add to download cache - use the save_path to ensure consistency
+        // Add to persistent store - use the save_path to ensure consistency
         {
-            let mut cache = download_cache.lock().unwrap();
-            cache.insert(url.to_string(), save_path.to_string());
+            let mut store = self.persistent_store.lock().unwrap();
+            store.add_download(url.to_string(), save_path.to_string());
         }
         
         println!("✅ Downloaded {} to: {}", resource_type, saved_path.display());
@@ -912,6 +1019,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false
         ).unwrap();
         
@@ -934,7 +1042,8 @@ mod tests {
             true,
             true,
             Some(vec!["images".to_string()]),
-            true
+            true,
+            false
         ).unwrap();
         
         assert_eq!(mirror.max_depth, 5);
@@ -956,6 +1065,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false
         ).unwrap();
         
@@ -974,6 +1084,7 @@ mod tests {
             false,
             false,
             Some(vec!["images".to_string(), "css".to_string()]),
+            false,
             false
         ).unwrap();
         
@@ -1158,6 +1269,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false
         ).unwrap();
         
@@ -1177,6 +1289,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             false
         ).unwrap();
         
@@ -1264,4 +1377,4 @@ mod tests {
         println!("Updated HTML content:");
         println!("{}", html_content);
     }
-} 
+}

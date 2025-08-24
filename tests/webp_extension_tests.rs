@@ -38,7 +38,8 @@ fn test_webp_extension_rewriting_in_html() {
         false,
         false,
         None,
-        true // Enable WebP conversion
+        true, // Enable WebP conversion
+        false
     ).unwrap();
     
     // Create an HTML parser for the test page

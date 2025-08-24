@@ -1,6 +1,6 @@
 [package]
 name = "website-mirror"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A CLI utility to mirror websites by downloading static copies of HTML, CSS, images, and JavaScript files"

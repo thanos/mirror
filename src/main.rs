@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
                 download_external,
                 args.only_resources.clone(),
                 args.convert_to_webp,
+                args.clear_store,
             )?;
     
     mirror.mirror_website().await?;
